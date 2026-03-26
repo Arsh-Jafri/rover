@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing / coverage
+.tox/
+.nox/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Rover secrets and runtime files
+config.yaml
+.env
+*.db
+token.json
+credentials.json
+rover.log

@@ -1,0 +1,126 @@
+retailers:
+  - name: Amazon
+    domain: amazon.com
+    refund_window_days: 30
+    support_url: https://www.amazon.com/gp/help/customer/contact-us
+    support_email: null
+    policy_url: https://www.amazon.com/gp/help/customer/display.html?nodeId=GKM69DUUYKQWKBER
+
+  - name: Best Buy
+    domain: bestbuy.com
+    refund_window_days: 15
+    support_url: https://www.bestbuy.com/contact-us
+    support_email: null
+    policy_url: https://www.bestbuy.com/site/help-topics/return-exchange-policy/pcmcat260800050014.c
+
+  - name: Target
+    domain: target.com
+    refund_window_days: 90
+    support_url: https://www.target.com/co-contactUs
+    support_email: null
+    policy_url: https://www.target.com/spot/returns-exceptions
+
+  - name: Walmart
+    domain: walmart.com
+    refund_window_days: 90
+    support_url: https://www.walmart.com/help
+    support_email: null
+    policy_url: https://www.walmart.com/cp/returns/1231920
+
+  - name: Nike
+    domain: nike.com
+    refund_window_days: 60
+    support_url: https://www.nike.com/help
+    support_email: null
+    policy_url: https://www.nike.com/help/a/return-policy
+
+  - name: Apple
+    domain: apple.com
+    refund_window_days: 14
+    support_url: https://support.apple.com/contact
+    support_email: null
+    policy_url: https://www.apple.com/shop/help/returns_refund
+
+  - name: Costco
+    domain: costco.com
+    refund_window_days: 90
+    support_url: https://customerservice.costco.com
+    support_email: null
+    policy_url: https://customerservice.costco.com/app/answers/detail/a_id/1191
+
+  - name: Home Depot
+    domain: homedepot.com
+    refund_window_days: 90
+    support_url: https://www.homedepot.com/c/customer_service
+    support_email: null
+    policy_url: https://www.homedepot.com/c/Return_Policy
+
+  - name: Nordstrom
+    domain: nordstrom.com
+    refund_window_days: 40
+    support_url: https://www.nordstrom.com/customer-service
+    support_email: null
+    policy_url: https://www.nordstrom.com/c/return-policy
+
+  - name: Macys
+    domain: macys.com
+    refund_window_days: 30
+    support_url: https://www.macys.com/service/contact-us
+    support_email: null
+    policy_url: https://www.macys.com/service/return-policy
+
+  - name: Adidas
+    domain: adidas.com
+    refund_window_days: 30
+    support_url: https://www.adidas.com/us/help
+    support_email: null
+    policy_url: https://www.adidas.com/us/help-section-returns.html
+
+  - name: Sephora
+    domain: sephora.com
+    refund_window_days: 30
+    support_url: https://www.sephora.com/beauty/contact-us
+    support_email: null
+    policy_url: https://www.sephora.com/beauty/returns-exchanges
+
+  - name: Wayfair
+    domain: wayfair.com
+    refund_window_days: 30
+    support_url: https://www.wayfair.com/help/contact_us
+    support_email: null
+    policy_url: https://www.wayfair.com/help/article/return_policy
+
+  - name: REI
+    domain: rei.com
+    refund_window_days: 365
+    support_url: https://www.rei.com/help
+    support_email: null
+    policy_url: https://www.rei.com/help/return-policy
+
+  - name: IKEA
+    domain: ikea.com
+    refund_window_days: 365
+    support_url: https://www.ikea.com/us/en/customer-service/
+    support_email: null
+    policy_url: https://www.ikea.com/us/en/customer-service/returns-claims/
+
+  - name: Lowes
+    domain: lowes.com
+    refund_window_days: 90
+    support_url: https://www.lowes.com/l/contact-us
+    support_email: null
+    policy_url: https://www.lowes.com/l/help/return-policy
+
+  - name: eBay
+    domain: ebay.com
+    refund_window_days: 30
+    support_url: https://www.ebay.com/help/home
+    support_email: null
+    policy_url: https://www.ebay.com/help/buying/returns-refunds/return-item-refund?id=4041
+
+  - name: Newegg
+    domain: newegg.com
+    refund_window_days: 30
+    support_url: https://www.newegg.com/promotions/nepro/22-0050/index.html
+    support_email: null
+    policy_url: https://kb.newegg.com/knowledge-base/return-policy/

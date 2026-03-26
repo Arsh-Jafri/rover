@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rover"
+version = "0.1.0"
+description = "Automated price adjustment agent"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.39.0",
+    "google-api-python-client>=2.100.0",
+    "google-auth-oauthlib>=1.1.0",
+    "google-auth-httplib2>=0.2.0",
+    "apscheduler>=3.10.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+rover = "rover.main:main"
+
+[tool.setuptools.packages.find]
+include = ["rover*"]

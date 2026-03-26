@@ -1,0 +1,30 @@
+gmail:
+  credentials_file: credentials.json
+  token_file: token.json
+  scopes:
+    - https://www.googleapis.com/auth/gmail.readonly
+  search_query: "subject:(order confirmation OR receipt OR order received OR your order) newer_than:30d"
+
+anthropic:
+  model: claude-sonnet-4-20250514
+
+scraping:
+  max_retries: 3
+  min_delay: 2
+  max_delay: 5
+  rate_limit_per_domain: 10  # seconds between requests to same domain
+  timeout: 15
+
+scheduler:
+  email_scan_interval_minutes: 30
+  price_check_interval_hours: 6
+
+database:
+  path: rover.db
+
+logging:
+  level: INFO
+  file: rover.log
+
+retailers_yaml: retailers.yaml
+default_refund_window_days: 14

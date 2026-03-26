@@ -1,0 +1,35 @@
+import os
+from pathlib import Path
+
+import yaml
+from dotenv import load_dotenv
+
+_config = None
+
+
+def load_config(config_path: str | None = None) -> dict:
+    load_dotenv()
+
+    if config_path is None:
+        config_path = os.environ.get("ROVER_CONFIG", "config.yaml")
+
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+
+    with open(path) as f:
+        config = yaml.safe_load(f)
+
+    config.setdefault("anthropic", {})
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        config["anthropic"]["api_key"] = api_key
+
+    return config
+
+
+def get_config(config_path: str | None = None) -> dict:
+    global _config
+    if _config is None:
+        _config = load_config(config_path)
+    return _config
