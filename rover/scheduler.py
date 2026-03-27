@@ -53,20 +53,23 @@ class RoverScheduler:
         receipts_found = 0
         purchases_stored = 0
 
-        for email in emails:
+        for i, email in enumerate(emails):
             subject = email.get("subject", "")
             sender = email.get("from", "")
             body_text = email.get("body_text", "")
             body_html = email.get("body_html", "")
 
-            is_receipt = self.parser.classify_email(subject, sender, body_text)
-            if not is_receipt:
+            if not self.parser.is_likely_receipt(subject, body_text, body_html, sender):
                 continue
 
             receipts_found += 1
             receipt = self.parser.parse_receipt(subject, sender, body_text, body_html)
             if not receipt:
-                logger.warning("Failed to parse receipt from: %s", subject)
+                continue
+
+            order_number = receipt.get("order_number")
+            if order_number and self.db.has_purchase_for_order(receipt["retailer"], order_number):
+                logger.info("Duplicate order %s from %s — skipping", order_number, receipt["retailer"])
                 continue
 
             purchase_id = self.db.add_purchase(
@@ -77,6 +80,7 @@ class RoverScheduler:
                 retailer=receipt["retailer"],
                 purchase_date=receipt["purchase_date"],
                 currency=receipt.get("currency", "USD"),
+                order_number=order_number,
                 raw_email_snippet=body_text[:500] if body_text else None,
             )
             if purchase_id:

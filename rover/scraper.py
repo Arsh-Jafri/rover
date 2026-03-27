@@ -154,6 +154,41 @@ class Scraper:
 
         return text
 
+    def extract_footer_links(self, html: str, base_url: str) -> list[dict]:
+        """Extract links from the page footer.
+
+        Returns a list of dicts with 'text' and 'href' keys, with hrefs
+        resolved to absolute URLs. Falls back to all page links if no
+        footer element is found.
+        """
+        soup = BeautifulSoup(html, "lxml")
+
+        footer = soup.find("footer") or soup.select_one("[role=contentinfo]")
+
+        if footer:
+            anchors = footer.find_all("a", href=True)
+        else:
+            # No footer found — scan the bottom half of all links as a fallback
+            all_anchors = soup.find_all("a", href=True)
+            midpoint = len(all_anchors) // 2
+            anchors = all_anchors[midpoint:]
+
+        parsed_base = urlparse(base_url)
+        links = []
+        for a in anchors:
+            href = a["href"].strip()
+            text = a.get_text(strip=True).lower()
+            if not href or href.startswith(("#", "javascript:", "mailto:")):
+                continue
+            # Resolve relative URLs
+            if href.startswith("/"):
+                href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+            elif not href.startswith("http"):
+                continue
+            links.append({"text": text, "href": href})
+
+        return links
+
     def _rate_limit(self, domain: str) -> None:
         """Ensure a minimum interval between requests to the same domain."""
         with self._lock:

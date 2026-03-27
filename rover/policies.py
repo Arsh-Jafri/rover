@@ -37,12 +37,9 @@ class PolicyLookup:
     """Looks up retailer refund policies from the database, YAML seed data,
     or by scraping retailer websites and using an LLM to extract policy details."""
 
-    POLICY_PATHS = [
-        "/return-policy",
-        "/returns",
-        "/refund-policy",
-        "/help/returns",
-        "/pages/returns",
+    POLICY_KEYWORDS = [
+        "return", "refund", "exchange", "price adjustment",
+        "price match", "price protection",
     ]
 
     def __init__(
@@ -130,18 +127,32 @@ class PolicyLookup:
     def _scrape_policy(self, domain: str) -> RetailerInfo | None:
         """Attempt to scrape and parse the return policy from a retailer's website.
 
-        Tries common policy page paths, fetches and cleans the HTML, then
-        uses an LLM to extract structured policy data. Stores results in the DB.
+        Fetches the retailer homepage, scans footer links for return/refund
+        policy pages, then uses an LLM to extract structured policy data.
         """
-        for path in self.POLICY_PATHS:
-            url = f"https://www.{domain}{path}"
-            logger.debug("Trying policy URL: %s", url)
+        clean_domain = domain.removeprefix("www.")
+        homepage_url = f"https://www.{clean_domain}"
+        html = self.scraper.fetch(homepage_url)
+        if not html:
+            logger.debug("Could not fetch homepage for %s", domain)
+            return None
 
-            html = self.scraper.fetch(url)
-            if not html:
+        footer_links = self.scraper.extract_footer_links(html, homepage_url)
+        policy_links = self._find_policy_links(footer_links)
+
+        if not policy_links:
+            logger.debug("No policy links found in footer for %s", domain)
+            return None
+
+        for link in policy_links:
+            url = link["href"]
+            logger.debug("Trying policy link: %s (%s)", url, link["text"])
+
+            policy_html = self.scraper.fetch(url)
+            if not policy_html:
                 continue
 
-            cleaned = self.scraper.clean_html(html, url=url)
+            cleaned = self.scraper.clean_html(policy_html, url=url)
             if len(cleaned.strip()) < 50:
                 continue
 
@@ -164,7 +175,9 @@ class PolicyLookup:
             )
 
             logger.info(
-                "Scraped policy for %s: %d-day window", domain, refund_window
+                "Scraped policy for %s: %d-day window (from footer link)",
+                domain,
+                refund_window,
             )
             return RetailerInfo(
                 name=domain.split(".")[0].title(),
@@ -176,8 +189,20 @@ class PolicyLookup:
                 source="scraped",
             )
 
-        logger.debug("Could not scrape policy for %s from any known path", domain)
+        logger.debug("Could not extract policy for %s from any footer link", domain)
         return None
+
+    def _find_policy_links(self, links: list[dict]) -> list[dict]:
+        """Filter and rank footer links that likely point to a return/refund policy."""
+        matches = []
+        for link in links:
+            text = link["text"]
+            href = link["href"].lower()
+            for keyword in self.POLICY_KEYWORDS:
+                if keyword in text or keyword in href:
+                    matches.append(link)
+                    break
+        return matches
 
     def _extract_policy_with_llm(
         self, content: str, domain: str

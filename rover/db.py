@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS purchases (
     retailer TEXT,
     purchase_date TEXT,
     currency TEXT DEFAULT 'USD',
+    order_number TEXT,
     raw_email_snippet TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -64,7 +65,17 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self):
+        """Add columns that may not exist in older databases."""
+        columns = {
+            row[1]
+            for row in self.conn.execute("PRAGMA table_info(purchases)").fetchall()
+        }
+        if "order_number" not in columns:
+            self.conn.execute("ALTER TABLE purchases ADD COLUMN order_number TEXT")
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -78,20 +89,29 @@ class Database:
         retailer: str,
         purchase_date: str,
         currency: str = "USD",
+        order_number: str | None = None,
         raw_email_snippet: str | None = None,
     ) -> int | None:
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO purchases
                (gmail_message_id, item_name, price_paid, product_url, retailer,
-                purchase_date, currency, raw_email_snippet)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                purchase_date, currency, order_number, raw_email_snippet)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (gmail_message_id, item_name, price_paid, product_url, retailer,
-             purchase_date, currency, raw_email_snippet),
+             purchase_date, currency, order_number, raw_email_snippet),
         )
         self.conn.commit()
         if cursor.rowcount == 0:
             return None
         return cursor.lastrowid
+
+    def has_purchase_for_order(self, retailer: str, order_number: str) -> bool:
+        """Check if a purchase already exists for the given retailer + order number."""
+        row = self.conn.execute(
+            "SELECT 1 FROM purchases WHERE retailer = ? AND order_number = ? LIMIT 1",
+            (retailer, order_number),
+        ).fetchone()
+        return row is not None
 
     def get_purchase(self, purchase_id: int) -> dict | None:
         row = self.conn.execute(
