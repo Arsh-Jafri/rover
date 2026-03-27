@@ -16,17 +16,27 @@ _RECEIPT_TOOL = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "item_name": {
-                "type": "string",
-                "description": "Name of the purchased product or service",
-            },
-            "price_paid": {
-                "type": "number",
-                "description": "Total price paid for the item including tax",
-            },
-            "product_url": {
-                "type": ["string", "null"],
-                "description": "Direct URL to the product page, if available",
+            "items": {
+                "type": "array",
+                "description": "List of individual items purchased. One entry per distinct item.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item_name": {
+                            "type": "string",
+                            "description": "Name of the purchased product or service",
+                        },
+                        "price_paid": {
+                            "type": "number",
+                            "description": "Price of this individual item before tax and shipping",
+                        },
+                        "product_url": {
+                            "type": ["string", "null"],
+                            "description": "Direct URL to the product page, if available",
+                        },
+                    },
+                    "required": ["item_name", "price_paid"],
+                },
             },
             "retailer": {
                 "type": "string",
@@ -65,7 +75,7 @@ _RECEIPT_TOOL = {
                 ),
             },
         },
-        "required": ["item_name", "price_paid", "retailer", "purchase_date", "currency", "email_type"],
+        "required": ["items", "retailer", "purchase_date", "currency", "email_type"],
     },
 }
 
@@ -182,15 +192,16 @@ class ReceiptParser:
         sender: str,
         body_text: str,
         body_html: str | None = None,
-    ) -> dict | None:
+    ) -> list[dict] | None:
         """Extract structured receipt data from an email using Claude tool_use.
 
         Cleans HTML to readable text before sending to the LLM.
         Input is truncated to ~8000 characters to control API costs.
 
         Returns:
-            Dict with keys matching the extract_receipt tool schema, or None
-            if extraction fails.
+            List of dicts (one per item) with keys: item_name, price_paid,
+            product_url, retailer, purchase_date, currency, order_number.
+            Returns None if extraction fails or email is not a receipt.
         """
         if body_html:
             body = _clean_html_to_text(body_html)
@@ -211,7 +222,9 @@ class ReceiptParser:
             "- 'refund' for refund or return confirmations\n"
             "- 'subscription' for recurring subscription, membership, or renewal charges\n"
             "- 'other' for anything else\n\n"
-            "Extract all fields including order_number if present.\n\n"
+            "Extract each item separately in the items array — one entry per distinct product.\n"
+            "For price_paid, use each item's individual price BEFORE tax and shipping.\n"
+            "Extract order_number if present.\n\n"
             f"Subject: {subject}\n"
             f"From: {sender}\n"
             f"Email body:\n{body}"
@@ -220,7 +233,7 @@ class ReceiptParser:
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=1024,
+                max_tokens=2048,
                 tools=[_RECEIPT_TOOL],
                 tool_choice={"type": "tool", "name": "extract_receipt"},
                 messages=[{"role": "user", "content": prompt}],
@@ -228,29 +241,54 @@ class ReceiptParser:
 
             for block in response.content:
                 if block.type == "tool_use" and block.name == "extract_receipt":
-                    receipt = block.input
-                    email_type = receipt.get("email_type", "other")
+                    data = block.input
+                    email_type = data.get("email_type", "other")
                     if email_type != "receipt":
                         logger.info(
                             "Skipping non-receipt email (type=%s): %s", email_type, subject
                         )
                         return None
-                    try:
-                        receipt["price_paid"] = float(receipt["price_paid"])
-                    except (ValueError, TypeError, KeyError):
-                        logger.warning("Invalid price_paid in receipt: %s", receipt.get("price_paid"))
+
+                    raw_items = data.get("items", [])
+                    if not raw_items:
+                        logger.warning("No items in receipt for: %s", subject)
                         return None
-                    if receipt["price_paid"] <= 0:
-                        logger.info("Skipping non-positive price (likely refund): $%.2f for %s", receipt["price_paid"], subject)
+
+                    parsed_items = []
+                    for item in raw_items:
+                        try:
+                            price = float(item["price_paid"])
+                        except (ValueError, TypeError, KeyError):
+                            logger.warning("Invalid price_paid in item: %s", item.get("price_paid"))
+                            continue
+                        if price <= 0:
+                            logger.info("Skipping non-positive price item: $%.2f", price)
+                            continue
+                        parsed_items.append({
+                            "item_name": item.get("item_name", "Unknown"),
+                            "price_paid": price,
+                            "product_url": item.get("product_url"),
+                            "retailer": data["retailer"],
+                            "purchase_date": data["purchase_date"],
+                            "currency": data.get("currency", "USD"),
+                            "order_number": data.get("order_number"),
+                            "support_email": data.get("support_email"),
+                            "support_url": data.get("support_url"),
+                        })
+
+                    if not parsed_items:
+                        logger.warning("No valid items after filtering for: %s", subject)
                         return None
-                    logger.info(
-                        "Parsed receipt: %s from %s — $%.2f (order: %s)",
-                        receipt.get("item_name"),
-                        receipt.get("retailer"),
-                        receipt["price_paid"],
-                        receipt.get("order_number", "N/A"),
-                    )
-                    return receipt
+
+                    for item in parsed_items:
+                        logger.info(
+                            "Parsed item: %s from %s — $%.2f (order: %s)",
+                            item["item_name"],
+                            item["retailer"],
+                            item["price_paid"],
+                            item.get("order_number", "N/A"),
+                        )
+                    return parsed_items
 
             logger.warning("No tool_use block in response for: %s", subject)
             return None

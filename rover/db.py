@@ -105,11 +105,11 @@ class Database:
             return None
         return cursor.lastrowid
 
-    def has_purchase_for_order(self, retailer: str, order_number: str) -> bool:
-        """Check if a purchase already exists for the given retailer + order number."""
+    def has_purchase_for_item(self, retailer: str, order_number: str, item_name: str) -> bool:
+        """Check if a purchase already exists for the given retailer + order + item."""
         row = self.conn.execute(
-            "SELECT 1 FROM purchases WHERE retailer = ? AND order_number = ? LIMIT 1",
-            (retailer, order_number),
+            "SELECT 1 FROM purchases WHERE retailer = ? AND order_number = ? AND item_name = ? LIMIT 1",
+            (retailer, order_number, item_name),
         ).fetchone()
         return row is not None
 

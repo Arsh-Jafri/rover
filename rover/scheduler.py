@@ -62,31 +62,35 @@ class RoverScheduler:
             if not self.parser.is_likely_receipt(subject, body_text, body_html, sender):
                 continue
 
+            items = self.parser.parse_receipt(subject, sender, body_text, body_html)
+            if not items:
+                continue
+
             receipts_found += 1
-            receipt = self.parser.parse_receipt(subject, sender, body_text, body_html)
-            if not receipt:
-                continue
+            order_number = items[0].get("order_number")
 
-            order_number = receipt.get("order_number")
-            if order_number and self.db.has_purchase_for_order(receipt["retailer"], order_number):
-                logger.info("Duplicate order %s from %s — skipping", order_number, receipt["retailer"])
-                continue
+            for idx, item in enumerate(items):
+                if order_number and self.db.has_purchase_for_item(
+                    item["retailer"], order_number, item["item_name"]
+                ):
+                    logger.info("Duplicate item '%s' in order %s — skipping", item["item_name"], order_number)
+                    continue
+                item_msg_id = f"{email['id']}:{idx}" if len(items) > 1 else email["id"]
+                purchase_id = self.db.add_purchase(
+                    gmail_message_id=item_msg_id,
+                    item_name=item["item_name"],
+                    price_paid=item["price_paid"],
+                    product_url=item.get("product_url"),
+                    retailer=item["retailer"],
+                    purchase_date=item["purchase_date"],
+                    currency=item.get("currency", "USD"),
+                    order_number=order_number,
+                    raw_email_snippet=body_text[:500] if body_text else None,
+                )
+                if purchase_id:
+                    purchases_stored += 1
 
-            purchase_id = self.db.add_purchase(
-                gmail_message_id=email["id"],
-                item_name=receipt["item_name"],
-                price_paid=receipt["price_paid"],
-                product_url=receipt.get("product_url"),
-                retailer=receipt["retailer"],
-                purchase_date=receipt["purchase_date"],
-                currency=receipt.get("currency", "USD"),
-                order_number=order_number,
-                raw_email_snippet=body_text[:500] if body_text else None,
-            )
-            if purchase_id:
-                purchases_stored += 1
-
-            self._enrich_retailer(receipt)
+            self._enrich_retailer(items[0])
 
         from datetime import date
         self.db.set_metadata("last_email_scan_date", date.today().isoformat())

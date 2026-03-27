@@ -177,14 +177,16 @@ async function scanEmails() {
       html += '<div class="row"><div><div class="label">From</div><div class="value">' + esc(e.from) + '</div></div>';
       html += '<div><div class="label">Date</div><div class="value">' + esc(e.date) + '</div></div></div>';
       if (e.receipt) {
-        const r = e.receipt;
-        html += '<div class="row">';
-        html += '<div><div class="label">Item</div><div class="value">' + esc(r.item_name) + '</div></div>';
-        html += '<div><div class="label">Price</div><div class="value">$' + r.price_paid.toFixed(2) + '</div></div>';
-        html += '<div><div class="label">Retailer</div><div class="value">' + esc(r.retailer) + '</div></div>';
-        html += '</div>';
-        if (r.product_url) {
-          html += '<div><div class="label">Product URL</div><div class="value"><a href="' + esc(r.product_url) + '" target="_blank">' + esc(r.product_url) + '</a></div></div>';
+        const items = Array.isArray(e.receipt) ? e.receipt : [e.receipt];
+        for (const r of items) {
+          html += '<div class="row">';
+          html += '<div><div class="label">Item</div><div class="value">' + esc(r.item_name) + '</div></div>';
+          html += '<div><div class="label">Price</div><div class="value">$' + r.price_paid.toFixed(2) + '</div></div>';
+          html += '<div><div class="label">Retailer</div><div class="value">' + esc(r.retailer) + '</div></div>';
+          html += '</div>';
+          if (r.product_url) {
+            html += '<div><div class="label">Product URL</div><div class="value"><a href="' + esc(r.product_url) + '" target="_blank">' + esc(r.product_url) + '</a></div></div>';
+          }
         }
       }
       html += '</div>';
@@ -344,31 +346,39 @@ def emails_scan():
             }
 
             if is_receipt:
-                receipt = parser.parse_receipt(subject, sender, body_text, body_html)
-                if not receipt:
+                items = parser.parse_receipt(subject, sender, body_text, body_html)
+                if not items:
                     entry["is_receipt"] = False
                     entry["skip_reason"] = "not a purchase"
                 else:
                     receipts_found += 1
-                    order_number = receipt.get("order_number")
-                    if order_number and db.has_purchase_for_order(receipt["retailer"], order_number):
-                        entry["is_receipt"] = False
-                        entry["skip_reason"] = "duplicate order"
-                    else:
-                        entry["receipt"] = receipt
+                    order_number = items[0].get("order_number")
+                    entry["receipt"] = items
+                    all_dupes = True
+                    for idx, item in enumerate(items):
+                        if order_number and db.has_purchase_for_item(
+                            item["retailer"], order_number, item["item_name"]
+                        ):
+                            continue
+                        all_dupes = False
+                        item_msg_id = f"{email['id']}:{idx}" if len(items) > 1 else email["id"]
                         purchase_id = db.add_purchase(
-                            gmail_message_id=email["id"],
-                            item_name=receipt["item_name"],
-                            price_paid=receipt["price_paid"],
-                            product_url=receipt.get("product_url"),
-                            retailer=receipt["retailer"],
-                            purchase_date=receipt["purchase_date"],
-                            currency=receipt.get("currency", "USD"),
+                            gmail_message_id=item_msg_id,
+                            item_name=item["item_name"],
+                            price_paid=item["price_paid"],
+                            product_url=item.get("product_url"),
+                            retailer=item["retailer"],
+                            purchase_date=item["purchase_date"],
+                            currency=item.get("currency", "USD"),
                             order_number=order_number,
                             raw_email_snippet=body_text[:500] if body_text else None,
                         )
                         if purchase_id:
                             purchases_stored += 1
+                    if all_dupes:
+                        entry["is_receipt"] = False
+                        entry["skip_reason"] = "duplicate order"
+                        entry["receipt"] = None
 
             results.append(entry)
 
