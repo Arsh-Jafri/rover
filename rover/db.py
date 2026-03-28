@@ -76,6 +76,8 @@ class Database:
         }
         if "order_number" not in columns:
             self.conn.execute("ALTER TABLE purchases ADD COLUMN order_number TEXT")
+        if "url_search_attempted" not in columns:
+            self.conn.execute("ALTER TABLE purchases ADD COLUMN url_search_attempted INTEGER DEFAULT 0")
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -112,6 +114,29 @@ class Database:
             (retailer, order_number, item_name),
         ).fetchone()
         return row is not None
+
+    def update_purchase_url(self, purchase_id: int, product_url: str) -> None:
+        """Set the product_url for a purchase."""
+        self.conn.execute(
+            "UPDATE purchases SET product_url = ? WHERE id = ?",
+            (product_url, purchase_id),
+        )
+        self.conn.commit()
+
+    def mark_url_search_attempted(self, purchase_id: int) -> None:
+        """Mark that we've already tried to find a product URL for this purchase."""
+        self.conn.execute(
+            "UPDATE purchases SET url_search_attempted = 1 WHERE id = ?",
+            (purchase_id,),
+        )
+        self.conn.commit()
+
+    def get_purchases_needing_url(self) -> list[dict]:
+        """Get purchases that have no product_url and haven't been searched yet."""
+        rows = self.conn.execute(
+            "SELECT * FROM purchases WHERE product_url IS NULL AND url_search_attempted = 0"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_purchase(self, purchase_id: int) -> dict | None:
         row = self.conn.execute(

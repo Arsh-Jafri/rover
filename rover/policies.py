@@ -1,21 +1,29 @@
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, quote_plus, urlparse
 
 import anthropic
+import requests
 import yaml
+from bs4 import BeautifulSoup
 
 from rover.db import Database
 from rover.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 
-POLICY_EXTRACTION_PROMPT = """Analyze this retailer's return/refund policy page and extract the following information.
-Respond using the provided tool.
+_EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+_DAYS_RE = re.compile(r"\d+")
 
-Page content:
+POLICY_EXTRACTION_PROMPT = """How many days does this retailer allow for returns or price adjustments after purchase?
+
+If there is a specific price adjustment/price protection window, prefer that over the general return window.
+Respond with ONLY the number of days (e.g. 30), or "null" if not found. No other text.
+
+Policy page content:
 {content}
 """
 
@@ -30,7 +38,8 @@ class RetailerInfo:
     support_email: str | None = None
     support_url: str | None = None
     policy_url: str | None = None
-    source: str = "manual"
+    source: str = "manual"  # "manual" | "scraped" | "default"
+    window_type: str = "return"  # "price_adjustment" | "return" | "default"
 
 
 class PolicyLookup:
@@ -156,13 +165,13 @@ class PolicyLookup:
             if len(cleaned.strip()) < 50:
                 continue
 
-            extracted = self._extract_policy_with_llm(cleaned, domain)
-            if extracted is None:
+            extracted = self._extract_policy_with_llm(cleaned)
+            refund_window = extracted.get("refund_window_days")
+            if not refund_window:
                 continue
 
-            refund_window = extracted.get("refund_window_days", self.default_window)
             support_email = extracted.get("support_email")
-            support_url = extracted.get("support_url")
+            support_url = None
 
             self.db.upsert_retailer(
                 name=domain.split(".")[0].title(),
@@ -204,41 +213,19 @@ class PolicyLookup:
                     break
         return matches
 
-    def _extract_policy_with_llm(
-        self, content: str, domain: str
-    ) -> dict | None:
-        """Use Claude with tool_use to extract policy details from page text."""
-        tools = [
-            {
-                "name": "extract_policy",
-                "description": "Extract return/refund policy details from the page content.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "refund_window_days": {
-                            "type": "integer",
-                            "description": "Number of days from purchase within which a return/refund is accepted.",
-                        },
-                        "support_email": {
-                            "type": ["string", "null"],
-                            "description": "Customer support email address, or null if not found.",
-                        },
-                        "support_url": {
-                            "type": ["string", "null"],
-                            "description": "Customer support or contact page URL, or null if not found.",
-                        },
-                    },
-                    "required": ["refund_window_days"],
-                },
-            }
-        ]
+    def _extract_policy_with_llm(self, content: str) -> dict:
+        """Extract refund window from policy page text using an LLM,
+        and contact email using regex.
+
+        Returns dict with refund_window_days and support_email.
+        """
+        result = {"refund_window_days": None, "support_email": None}
 
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=512,
-                tools=tools,
-                tool_choice={"type": "tool", "name": "extract_policy"},
+                max_tokens=32,
+                temperature=0,
                 messages=[
                     {
                         "role": "user",
@@ -246,15 +233,131 @@ class PolicyLookup:
                     }
                 ],
             )
-
-            for block in response.content:
-                if block.type == "tool_use" and block.name == "extract_policy":
-                    return block.input
-
+            text = response.content[0].text.strip()
+            if "null" not in text.lower():
+                match = _DAYS_RE.search(text)
+                if match:
+                    days = int(match.group())
+                    if 1 <= days <= 365:
+                        result["refund_window_days"] = days
         except anthropic.APIError as exc:
-            logger.error("LLM API error extracting policy for %s: %s", domain, exc)
+            logger.error("LLM API error extracting policy: %s", exc)
 
-        return None
+        # Extract support email with regex (skip noreply/automated addresses)
+        emails = _EMAIL_PATTERN.findall(content)
+        for email in emails:
+            lower = email.lower()
+            if any(skip in lower for skip in ["noreply", "no-reply", "donotreply", "mailer-daemon"]):
+                continue
+            result["support_email"] = email
+            break
+
+        return result
+
+    def discover_policy(self, domain: str, retailer_name: str | None = None) -> RetailerInfo:
+        """Discover refund policy for a retailer by searching for their policy page.
+
+        Uses DuckDuckGo to find the policy page, then LLM to extract the window.
+        Falls back to footer link scraping, then defaults.
+        """
+        # Try DuckDuckGo search for policy page — prefer retailer name over domain
+        policy_url, content = self._search_policy_page(domain, retailer_name=retailer_name)
+        if content:
+            extracted = self._extract_policy_with_llm(content)
+            if extracted["refund_window_days"]:
+                name = domain.split(".")[0].title()
+                self.db.upsert_retailer(
+                    name=name, domain=domain,
+                    refund_window_days=extracted["refund_window_days"],
+                    support_email=extracted["support_email"],
+                    policy_url=policy_url,
+                    source="scraped",
+                )
+                logger.info(
+                    "Discovered policy for %s: %d-day window",
+                    domain, extracted["refund_window_days"],
+                )
+                return RetailerInfo(
+                    name=name, domain=domain,
+                    refund_window_days=extracted["refund_window_days"],
+                    support_email=extracted["support_email"],
+                    policy_url=policy_url,
+                    source="scraped",
+                )
+
+        # Fall back to footer link scraping
+        scraped = self._scrape_policy(domain)
+        if scraped:
+            return scraped
+
+        # Default: 30 days
+        logger.info("No policy found for %s, using default 30-day window", domain)
+        return RetailerInfo(
+            name=domain, domain=domain,
+            refund_window_days=30,
+            source="default",
+            window_type="default",
+        )
+
+    def _search_policy_page(
+        self, domain: str, retailer_name: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Search DuckDuckGo for a retailer's return/refund policy page.
+
+        Searches by retailer name (e.g. "On Running return policy") for better
+        results than domain-based search. Falls back to domain if no name given.
+
+        Returns (policy_url, cleaned_text) or (None, None).
+        """
+        from rover.price_checker import _get_ddg_session
+
+        search_term = retailer_name if retailer_name else domain
+        query = f"{search_term} return refund policy"
+        ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+
+        session = _get_ddg_session()
+
+        try:
+            resp = session.get(ddg_url, timeout=10)
+        except requests.RequestException:
+            return None, None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        if "bots use DuckDuckGo" in soup.get_text():
+            import rover.price_checker as _pc
+            logger.warning("DuckDuckGo rate limited during policy search — resetting session")
+            _pc._ddg_session = None
+            return None, None
+
+        # Find the best policy link from search results
+        clean_domain = domain.removeprefix("www.")
+        for link in soup.select(".result__a"):
+            raw_href = link.get("href", "")
+            parsed = urlparse(raw_href)
+            qs = parse_qs(parsed.query)
+            actual_url = qs.get("uddg", [None])[0] or raw_href
+            if not actual_url or not actual_url.startswith("http"):
+                continue
+            if "duckduckgo.com" in actual_url:
+                continue
+            # Prefer results from the retailer's own site, but also accept
+            # results where the domain or retailer name appears in the URL
+            result_domain = urlparse(actual_url).netloc.lower()
+            name_parts = [p.lower() for p in (retailer_name or "").split() if len(p) > 2]
+            domain_match = clean_domain in result_domain
+            name_match = any(part in result_domain for part in name_parts)
+            if not domain_match and not name_match:
+                continue
+            title = link.get_text(strip=True).lower()
+            url_lower = actual_url.lower()
+            if any(kw in title or kw in url_lower for kw in ["return", "refund", "policy", "exchange"]):
+                # Found a policy page — fetch and extract
+                policy_html = self.scraper.fetch(actual_url)
+                if policy_html:
+                    cleaned = self.scraper.clean_html(policy_html, url=actual_url)
+                    if len(cleaned.strip()) > 50:
+                        return actual_url, cleaned
+        return None, None
 
     def is_within_refund_window(self, purchase_date: str, domain: str) -> bool:
         """Check whether today falls within the retailer's refund window

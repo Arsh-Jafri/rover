@@ -13,6 +13,7 @@ from rover.gmail import GmailClient
 from rover.logger import setup_logging
 from rover.parser import ReceiptParser
 from rover.policies import PolicyLookup
+from rover.price_checker import PriceChecker
 from rover.scraper import Scraper
 
 app = Flask(__name__)
@@ -24,10 +25,11 @@ gmail = None
 parser = None
 scraper = None
 policy_lookup = None
+price_checker = None
 
 
 def init():
-    global config, db, gmail, parser, scraper, policy_lookup
+    global config, db, gmail, parser, scraper, policy_lookup, price_checker
     config = get_config()
     setup_logging(config)
     db = Database(config.get("database", {}).get("path", "rover.db"))
@@ -51,6 +53,12 @@ def init():
         llm_model=llm_model,
         retailers_yaml_path=config.get("retailers_yaml", "retailers.yaml"),
         default_window=config.get("default_refund_window_days", 14),
+    )
+    price_checker = PriceChecker(
+        config=config,
+        db=db,
+        scraper=scraper,
+        policy_lookup=policy_lookup,
     )
 
 
@@ -124,9 +132,36 @@ TEMPLATE = """
   <div class="results" id="purchases-results"></div>
 </div>
 
-<!-- Policy Lookup -->
+<!-- URL Discovery -->
 <div class="section">
-  <h2>4. Policy Link Discovery</h2>
+  <h2>4. Discover Product URLs</h2>
+  <p style="font-size:0.85rem;color:#888;margin-bottom:12px;">Searches DuckDuckGo to find product page URLs for purchases that don't have one.</p>
+  <button onclick="discoverUrls()" id="btn-urls">Find Product URLs</button>
+  <div class="status" id="urls-status"></div>
+  <div class="results" id="urls-results"></div>
+</div>
+
+<!-- Price Check -->
+<div class="section">
+  <h2>5. Check Prices</h2>
+  <p style="font-size:0.85rem;color:#888;margin-bottom:12px;">Scrapes current prices for tracked purchases and detects price drops within refund windows.</p>
+  <button onclick="checkPrices()" id="btn-prices">Check Prices</button>
+  <div class="status" id="prices-status"></div>
+  <div class="results" id="prices-results"></div>
+</div>
+
+<!-- Policy Discovery -->
+<div class="section">
+  <h2>6. Discover Refund Policies</h2>
+  <p style="font-size:0.85rem;color:#888;margin-bottom:12px;">Searches for return/refund policies for all retailers in your purchases. Uses regex to extract refund windows.</p>
+  <button onclick="discoverPolicies()" id="btn-policies">Find Refund Policies</button>
+  <div class="status" id="policies-status"></div>
+  <div class="results" id="policies-results"></div>
+</div>
+
+<!-- Manual Policy Lookup -->
+<div class="section">
+  <h2>7. Manual Policy Lookup</h2>
   <p style="font-size:0.85rem;color:#888;margin-bottom:12px;">Scrapes a retailer homepage footer for return/refund policy links.</p>
   <div style="display:flex;gap:8px;align-items:center;">
     <input type="text" id="domain-input" placeholder="e.g. bestbuy.com">
@@ -223,6 +258,128 @@ async function loadPurchases() {
     container.innerHTML = html || '<div style="color:#666;font-size:0.85rem;">No purchases yet. Run an email scan first.</div>';
   } catch(e) {
     setStatus('purchases-status', 'Request failed: ' + e, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function discoverUrls() {
+  const btn = document.getElementById('btn-urls');
+  btn.disabled = true;
+  setStatus('urls-status', '<span class="spinner"></span> Searching for product URLs (this may take a while)...');
+  document.getElementById('urls-results').innerHTML = '';
+  try {
+    const res = await fetch('/api/purchases/discover-urls', {method: 'POST'});
+    const data = await res.json();
+    if (!data.ok) { setStatus('urls-status', 'Error: ' + data.error, 'err'); btn.disabled = false; return; }
+    setStatus('urls-status', data.urls_found + ' new URLs found', 'ok');
+    const container = document.getElementById('urls-results');
+    let html = '';
+    for (const p of data.purchases) {
+      const hasUrl = !!p.product_url;
+      const tag = hasUrl ? '<span class="tag receipt">has URL</span>' : '<span class="tag skip">no URL</span>';
+      html += '<div class="card"><div class="row">';
+      html += '<div><div class="label">Item</div><div class="value">' + esc(p.item_name) + ' ' + tag + '</div></div>';
+      html += '<div><div class="label">Retailer</div><div class="value">' + esc(p.retailer) + '</div></div>';
+      html += '</div>';
+      if (p.product_url) {
+        html += '<div><div class="label">URL</div><div class="value"><a href="' + esc(p.product_url) + '" target="_blank" style="color:#60a5fa;">' + esc(p.product_url).substring(0, 80) + '</a></div></div>';
+      }
+      html += '</div>';
+    }
+    container.innerHTML = html;
+  } catch(e) {
+    setStatus('urls-status', 'Request failed: ' + e, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function checkPrices() {
+  const btn = document.getElementById('btn-prices');
+  btn.disabled = true;
+  setStatus('prices-status', '<span class="spinner"></span> Checking prices (scraping product pages)...');
+  document.getElementById('prices-results').innerHTML = '';
+  try {
+    const res = await fetch('/api/purchases/check-prices', {method: 'POST'});
+    const data = await res.json();
+    if (!data.ok) { setStatus('prices-status', 'Error: ' + data.error, 'err'); btn.disabled = false; return; }
+    setStatus('prices-status', data.total_drops + ' price drop(s) detected', data.total_drops > 0 ? 'ok' : '');
+    const container = document.getElementById('prices-results');
+    let html = '';
+    if (data.drops.length) {
+      for (const d of data.drops) {
+        html += '<div class="card" style="border-color:#22c55e;">';
+        html += '<div class="row">';
+        html += '<div><div class="label">Item</div><div class="value">' + esc(d.item_name) + ' <span class="tag receipt">PRICE DROP</span></div></div>';
+        html += '</div><div class="row">';
+        html += '<div><div class="label">Paid</div><div class="value">$' + d.price_paid.toFixed(2) + '</div></div>';
+        html += '<div><div class="label">Now</div><div class="value" style="color:#22c55e;">$' + d.current_price.toFixed(2) + '</div></div>';
+        html += '<div><div class="label">Savings</div><div class="value" style="color:#22c55e;font-weight:bold;">$' + d.savings_amount.toFixed(2) + '</div></div>';
+        html += '</div></div>';
+      }
+    } else {
+      html += '<div style="color:#666;font-size:0.85rem;margin-bottom:12px;">No price drops detected.</div>';
+    }
+    if (data.all_checks && data.all_checks.length) {
+      html += '<div style="margin-top:16px;"><div class="label" style="margin-bottom:8px;">All Price Checks</div>';
+      for (const c of data.all_checks) {
+        const hasPrice = c.current_price != null;
+        let detail = '';
+        if (hasPrice) {
+          const diff = c.price_paid - c.current_price;
+          if (diff > 0) detail = '<span style="color:#22c55e;">now $' + c.current_price.toFixed(2) + ' (save $' + diff.toFixed(2) + ')</span>';
+          else if (diff === 0) detail = '<span style="color:#888;">$' + c.current_price.toFixed(2) + ' (no change)</span>';
+          else detail = '<span style="color:#ef4444;">now $' + c.current_price.toFixed(2) + ' (up $' + Math.abs(diff).toFixed(2) + ')</span>';
+        } else {
+          detail = '<span class="tag skip">' + esc(c.status) + '</span>';
+        }
+        html += '<div class="card" style="padding:10px;"><div class="row">';
+        html += '<div style="flex:2;"><div class="value" style="font-size:0.85rem;">' + esc(c.item_name) + '</div></div>';
+        html += '<div><div class="value" style="font-size:0.85rem;">paid $' + c.price_paid.toFixed(2) + '</div></div>';
+        html += '<div style="flex:1.5;"><div class="value" style="font-size:0.85rem;">' + detail + '</div></div>';
+        html += '</div></div>';
+      }
+      html += '</div>';
+    }
+    container.innerHTML = html;
+  } catch(e) {
+    setStatus('prices-status', 'Request failed: ' + e, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function discoverPolicies() {
+  const btn = document.getElementById('btn-policies');
+  btn.disabled = true;
+  setStatus('policies-status', '<span class="spinner"></span> Searching for refund policies...');
+  document.getElementById('policies-results').innerHTML = '';
+  try {
+    const res = await fetch('/api/policies/discover', {method: 'POST'});
+    const data = await res.json();
+    if (!data.ok) { setStatus('policies-status', 'Error: ' + data.error, 'err'); btn.disabled = false; return; }
+    const discovered = data.policies.filter(p => p.status === 'discovered').length;
+    setStatus('policies-status', `${data.policies.length} retailers checked, ${discovered} newly discovered`, 'ok');
+    const container = document.getElementById('policies-results');
+    let html = '';
+    for (const p of data.policies) {
+      const windowType = p.window_type === 'price_adjustment' ? 'price adjustment' : p.window_type === 'return' ? 'return window' : 'default';
+      const sourceTag = p.source === 'scraped' ? '<span class="tag receipt">scraped</span>'
+        : p.source === 'manual' ? '<span class="tag skip">from config</span>'
+        : '<span class="tag skip">default</span>';
+      html += '<div class="card" style="padding:12px;"><div class="row">';
+      html += '<div style="flex:2;"><div class="label">Retailer</div><div class="value">' + esc(p.retailer) + ' ' + sourceTag + '</div></div>';
+      html += '<div><div class="label">Refund Window</div><div class="value">' + p.refund_window_days + ' days (' + windowType + ')</div></div>';
+      html += '</div>';
+      if (p.support_email || p.policy_url) {
+        html += '<div class="row" style="margin-top:4px;">';
+        if (p.support_email) html += '<div><div class="label">Contact</div><div class="value">' + esc(p.support_email) + '</div></div>';
+        if (p.policy_url) html += '<div><div class="label">Policy</div><div class="value"><a href="' + esc(p.policy_url) + '" target="_blank" style="color:#60a5fa;">' + esc(p.policy_url).substring(0, 60) + '</a></div></div>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+    container.innerHTML = html;
+  } catch(e) {
+    setStatus('policies-status', 'Request failed: ' + e, 'err');
   }
   btn.disabled = false;
 }
@@ -346,7 +503,7 @@ def emails_scan():
             }
 
             if is_receipt:
-                items = parser.parse_receipt(subject, sender, body_text, body_html)
+                items = parser.parse_receipt(subject, sender, body_text, body_html, email_date=email.get("date", ""))
                 if not items:
                     entry["is_receipt"] = False
                     entry["skip_reason"] = "not a purchase"
@@ -445,6 +602,139 @@ def policy_discover():
             "policy_links": policy_links,
             "all_footer_links": footer_links,
             "existing_retailer": dict(existing) if existing else None,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/policies/discover", methods=["POST"])
+def discover_policies():
+    try:
+        # Get unique retailer domains from purchases
+        purchases = db.get_active_purchases()
+        retailers_seen = set()
+        results = []
+
+        for p in purchases:
+            retailer = p.get("retailer", "")
+            if retailer in retailers_seen:
+                continue
+            retailers_seen.add(retailer)
+
+            # Check if we already have a scraped policy
+            existing = None
+            rows = db.conn.execute(
+                "SELECT * FROM retailers WHERE name = ? OR domain LIKE ?",
+                (retailer, f"%{retailer.lower().split()[0]}%"),
+            ).fetchall()
+            if rows:
+                existing = dict(rows[0])
+
+            domain = existing.get("domain") if existing else None
+            if not domain:
+                # Try to find domain from product_url
+                product_url = p.get("product_url")
+                if product_url:
+                    from urllib.parse import urlparse as _urlparse
+                    d = _urlparse(product_url).netloc.lower()
+                    if d.startswith("www."):
+                        d = d[4:]
+                    domain = d
+
+            if existing and existing.get("source") == "scraped":
+                results.append({
+                    "retailer": retailer,
+                    "domain": domain,
+                    "refund_window_days": existing["refund_window_days"],
+                    "support_email": existing.get("support_email"),
+                    "policy_url": existing.get("policy_url"),
+                    "source": existing["source"],
+                    "status": "already_scraped",
+                })
+                continue
+
+            if not domain:
+                results.append({
+                    "retailer": retailer,
+                    "domain": None,
+                    "refund_window_days": existing["refund_window_days"] if existing else 30,
+                    "source": existing["source"] if existing else "default",
+                    "status": "no_domain",
+                })
+                continue
+
+            info = policy_lookup.discover_policy(domain, retailer_name=retailer)
+            # If scraping failed (returned default), prefer existing DB data
+            if info.source == "default" and existing:
+                results.append({
+                    "retailer": retailer,
+                    "domain": domain,
+                    "refund_window_days": existing["refund_window_days"],
+                    "support_email": existing.get("support_email"),
+                    "policy_url": existing.get("policy_url"),
+                    "source": existing.get("source", "manual"),
+                    "window_type": existing.get("window_type", "return"),
+                    "status": "manual",
+                })
+            else:
+                results.append({
+                    "retailer": retailer,
+                    "domain": domain,
+                    "refund_window_days": info.refund_window_days,
+                    "support_email": info.support_email,
+                    "policy_url": info.policy_url,
+                    "source": info.source,
+                    "window_type": info.window_type,
+                    "status": "discovered" if info.source == "scraped" else info.source,
+                })
+
+        return jsonify({"ok": True, "policies": results})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/purchases/discover-urls", methods=["POST"])
+def discover_urls():
+    try:
+        found = price_checker.discover_product_urls()
+        purchases = db.get_active_purchases()
+        return jsonify({
+            "ok": True,
+            "urls_found": found,
+            "purchases": [dict(p) for p in purchases],
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/purchases/check-prices", methods=["POST"])
+def check_prices():
+    try:
+        drops = price_checker.check_all_prices()
+
+        # Also return all recent checks for the UI
+        checks = db.conn.execute("""
+            SELECT p.item_name, p.price_paid, p.retailer, pc.current_price, pc.status
+            FROM price_checks pc
+            JOIN purchases p ON p.id = pc.purchase_id
+            ORDER BY pc.checked_at DESC
+        """).fetchall()
+        all_checks = [
+            {
+                "item_name": c[0], "price_paid": c[1], "retailer": c[2],
+                "current_price": c[3], "status": c[4],
+            }
+            for c in checks
+        ]
+
+        return jsonify({
+            "ok": True,
+            "drops": drops,
+            "total_drops": len(drops),
+            "all_checks": all_checks,
         })
     except Exception as e:
         traceback.print_exc()

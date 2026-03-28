@@ -192,6 +192,7 @@ class ReceiptParser:
         sender: str,
         body_text: str,
         body_html: str | None = None,
+        email_date: str | None = None,
     ) -> list[dict] | None:
         """Extract structured receipt data from an email using Claude tool_use.
 
@@ -224,9 +225,11 @@ class ReceiptParser:
             "- 'other' for anything else\n\n"
             "Extract each item separately in the items array — one entry per distinct product.\n"
             "For price_paid, use each item's individual price BEFORE tax and shipping.\n"
-            "Extract order_number if present.\n\n"
+            "Extract order_number if present.\n"
+            "For purchase_date, use the date from the email header below unless the body has a more specific order date.\n\n"
             f"Subject: {subject}\n"
             f"From: {sender}\n"
+            f"Date: {email_date or 'unknown'}\n"
             f"Email body:\n{body}"
         )
 

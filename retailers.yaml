@@ -124,3 +124,31 @@ retailers:
     support_url: https://www.newegg.com/promotions/nepro/22-0050/index.html
     support_email: null
     policy_url: https://kb.newegg.com/knowledge-base/return-policy/
+
+  - name: Abercrombie
+    domain: abercrombie.com
+    refund_window_days: 30
+    support_url: https://www.abercrombie.com/shop/us/customer-service
+    support_email: null
+    policy_url: https://www.abercrombie.com/shop/us/customer-service#returns
+
+  - name: Hollister
+    domain: hollisterco.com
+    refund_window_days: 30
+    support_url: https://www.hollisterco.com/shop/us/customer-service
+    support_email: null
+    policy_url: https://www.hollisterco.com/shop/us/customer-service#returns
+
+  - name: On Running
+    domain: on.com
+    refund_window_days: 30
+    support_url: https://www.on.com/en-us/support
+    support_email: null
+    policy_url: https://www.on.com/en-us/faq/returns-and-exchanges
+
+  - name: TikTok Shop
+    domain: tiktok.com
+    refund_window_days: 15
+    support_url: null
+    support_email: null
+    policy_url: null

@@ -1,3 +1,4 @@
+import json
 import logging
 import random
 import re
@@ -35,6 +36,11 @@ CONTENT_SELECTORS = [
     "#main-content",
     ".product",
     ".product-detail",
+    ".product-info",
+    ".product-details",
+    ".pdp-details",
+    "#product-content",
+    ".product-main",
 ]
 
 MAX_CLEANED_LENGTH = 12000
@@ -87,6 +93,15 @@ class Scraper:
                 response = self.session.get(url, headers=headers, timeout=timeout)
 
                 if response.status_code == 200:
+                    # Reject non-HTML responses (e.g. video, JSON API, images)
+                    content_type = response.headers.get("Content-Type", "")
+                    if content_type and not any(t in content_type for t in ["text/html", "application/xhtml"]):
+                        logger.warning("Non-HTML content-type '%s' from %s", content_type, url)
+                        return None
+                    # Check for CAPTCHA pages masquerading as 200
+                    if "captcha" in response.text[:2000].lower() or "Enter the characters" in response.text[:2000]:
+                        logger.warning("CAPTCHA detected on %s — will try browser fallback", url)
+                        break
                     logger.debug("Successfully fetched %s", url)
                     return response.text
 
@@ -104,9 +119,9 @@ class Scraper:
                     continue
 
                 logger.warning(
-                    "Unexpected status %d from %s", response.status_code, url
+                    "Unexpected status %d from %s — will try browser fallback", response.status_code, url
                 )
-                return None
+                break  # Fall through to Playwright fallback
 
             except requests.RequestException as exc:
                 backoff = (2 ** attempt) + random.uniform(0, 1)
@@ -121,16 +136,52 @@ class Scraper:
                 time.sleep(backoff)
 
         logger.error("All %d attempts failed for %s", max_retries, url)
-        return None
+
+        # Fallback: try headless browser for sites with strong bot detection
+        logger.info("Trying Playwright fallback for %s", url)
+        return self._fetch_with_browser(url)
+
+    def _fetch_with_browser(self, url: str) -> str | None:
+        """Fetch a page using Playwright headless browser as a fallback."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            logger.debug("Playwright not installed — skipping browser fallback")
+            return None
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    user_agent=random.choice(USER_AGENTS),
+                    viewport={"width": 1920, "height": 1080},
+                    locale="en-US",
+                )
+                page = context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(5000)
+                html = page.content()
+                browser.close()
+
+                if html and len(html) > 500:
+                    logger.info("Playwright fetched %s (%d chars)", url, len(html))
+                    return html
+                return None
+        except Exception as exc:
+            logger.error("Playwright fetch failed for %s: %s", url, exc)
+            return None
 
     def clean_html(self, html: str, url: str | None = None) -> str:
         """Parse HTML and extract the main text content.
 
-        Removes non-content elements (scripts, styles, navigation, etc.),
-        attempts to locate the main content area, and returns cleaned text
-        truncated to ~12000 characters.
+        Extracts JSON-LD product data first, then removes non-content elements
+        (scripts, styles, navigation, etc.), locates the main content area,
+        and returns cleaned text truncated to ~12000 characters.
         """
         soup = BeautifulSoup(html, "lxml")
+
+        # Extract JSON-LD product data before stripping scripts
+        json_ld_summary = self._extract_json_ld(soup)
 
         for tag in soup.find_all(REMOVE_TAGS):
             tag.decompose()
@@ -149,10 +200,68 @@ class Scraper:
         # Collapse multiple blank lines into a single blank line
         text = re.sub(r"\n{3,}", "\n\n", text)
 
+        # Prepend JSON-LD product data if found
+        if json_ld_summary:
+            text = json_ld_summary + "\n\n" + text
+
         if len(text) > MAX_CLEANED_LENGTH:
             text = text[:MAX_CLEANED_LENGTH]
 
         return text
+
+    @staticmethod
+    def _extract_json_ld(soup: BeautifulSoup) -> str | None:
+        """Extract product info from JSON-LD structured data if present.
+
+        Returns a human-readable summary string, or None.
+        """
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = json.loads(script.string or "")
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            # JSON-LD can be a single object or a list
+            items = data if isinstance(data, list) else [data]
+            # Also check @graph arrays
+            for item in list(items):
+                if isinstance(item, dict) and "@graph" in item:
+                    items.extend(item["@graph"])
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("@type", "")
+                if isinstance(item_type, list):
+                    item_type = " ".join(item_type)
+                if "Product" not in item_type:
+                    continue
+
+                parts = []
+                name = item.get("name")
+                if name:
+                    parts.append(f"Product: {name}")
+
+                # Extract price from offers
+                offers = item.get("offers", {})
+                if isinstance(offers, list):
+                    offers = offers[0] if offers else {}
+                price = offers.get("price") or offers.get("lowPrice")
+                currency = offers.get("priceCurrency", "USD")
+                if price:
+                    parts.append(f"Price: {currency} {price}")
+                availability = offers.get("availability", "")
+                if "OutOfStock" in str(availability):
+                    parts.append("Availability: Out of Stock")
+                elif "InStock" in str(availability):
+                    parts.append("Availability: In Stock")
+
+                if parts:
+                    summary = "[JSON-LD Product Data]\n" + "\n".join(parts)
+                    logger.debug("Extracted JSON-LD: %s", summary)
+                    return summary
+
+        return None
 
     def extract_footer_links(self, html: str, base_url: str) -> list[dict]:
         """Extract links from the page footer.

@@ -62,7 +62,8 @@ class RoverScheduler:
             if not self.parser.is_likely_receipt(subject, body_text, body_html, sender):
                 continue
 
-            items = self.parser.parse_receipt(subject, sender, body_text, body_html)
+            email_date = email.get("date", "")
+            items = self.parser.parse_receipt(subject, sender, body_text, body_html, email_date=email_date)
             if not items:
                 continue
 
