@@ -9,7 +9,7 @@ logger = get_logger("scheduler")
 
 
 class RoverScheduler:
-    def __init__(self, config, db, gmail_client, receipt_parser, price_checker, policy_lookup, notifier=None):
+    def __init__(self, config, db, gmail_client, receipt_parser, price_checker, policy_lookup, notifier=None, claimer=None):
         self.config = config
         self.db = db
         self.gmail = gmail_client
@@ -17,6 +17,7 @@ class RoverScheduler:
         self.price_checker = price_checker
         self.policy_lookup = policy_lookup
         self.notifier = notifier
+        self.claimer = claimer
         self.scheduler = BlockingScheduler()
 
     def start(self):
@@ -37,10 +38,19 @@ class RoverScheduler:
             name="Check prices for tracked purchases",
         )
 
+        claim_hours = sched_config.get("claim_interval_hours", 24)
+        self.scheduler.add_job(
+            self.send_claims,
+            trigger=IntervalTrigger(hours=claim_hours),
+            id="send_claims",
+            name="Send price adjustment claim emails",
+        )
+
         logger.info(
-            "Starting scheduler — email scan every %d min, price check every %d hr",
+            "Starting scheduler — email scan every %d min, price check every %d hr, claims every %d hr",
             email_minutes,
             price_hours,
+            claim_hours,
         )
         self.scheduler.start()
 
@@ -117,6 +127,17 @@ class RoverScheduler:
                 self.notifier.notify_drops(drops)
             except Exception:
                 logger.exception("Notification failed — drops saved in DB, will retry")
+
+    def send_claims(self):
+        if not self.claimer:
+            logger.warning("ClaimManager not available — skipping claims")
+            return
+        logger.info("Starting claim send run")
+        try:
+            result = self.claimer.send_claims()
+            logger.info("Claims complete: %s", result)
+        except Exception:
+            logger.exception("Claim sending failed — will retry next run")
 
     def _enrich_retailer(self, receipt: dict):
         product_url = receipt.get("product_url")

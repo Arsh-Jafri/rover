@@ -25,6 +25,10 @@ def load_config(config_path: str | None = None) -> dict:
     if api_key:
         config["anthropic"]["api_key"] = api_key
 
+    resend_key = os.environ.get("RESEND_API_KEY")
+    if resend_key:
+        config.setdefault("notifications", {})["resend_api_key"] = resend_key
+
     return config
 
 

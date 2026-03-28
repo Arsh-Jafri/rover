@@ -7,6 +7,7 @@ from datetime import date
 import anthropic
 from flask import Flask, jsonify, render_template_string, request
 
+from rover.claimer import ClaimManager
 from rover.config import get_config
 from rover.db import Database
 from rover.gmail import GmailClient
@@ -28,10 +29,11 @@ scraper = None
 policy_lookup = None
 price_checker = None
 notifier = None
+claimer = None
 
 
 def init():
-    global config, db, gmail, parser, scraper, policy_lookup, price_checker, notifier
+    global config, db, gmail, parser, scraper, policy_lookup, price_checker, notifier, claimer
     config = get_config()
     setup_logging(config)
     db = Database(config.get("database", {}).get("path", "rover.db"))
@@ -63,6 +65,11 @@ def init():
         policy_lookup=policy_lookup,
     )
     notifier = NotificationManager(
+        config=config,
+        db=db,
+        policy_lookup=policy_lookup,
+    )
+    claimer = ClaimManager(
         config=config,
         db=db,
         gmail_client=gmail,
@@ -177,6 +184,18 @@ TEMPLATE = """
   </div>
   <div class="status" id="notif-status"></div>
   <div class="results" id="notif-results"></div>
+</div>
+
+<!-- Price Adjustment Claims -->
+<div class="section">
+  <h2>9. Price Adjustment Claims</h2>
+  <p style="font-size:0.85rem;color:#888;margin-bottom:12px;">Send claim emails to retailers for notified price drops, or generate copy-paste messages for web-form retailers.</p>
+  <div style="display:flex;gap:8px;">
+    <button onclick="sendTestClaim()" id="btn-test-claim">Send Test Claim</button>
+    <button onclick="sendClaims()" id="btn-claims">Send Claims to Retailers</button>
+  </div>
+  <div class="status" id="claims-status"></div>
+  <div class="results" id="claims-results"></div>
 </div>
 
 <!-- Manual Policy Lookup -->
@@ -463,6 +482,44 @@ async function lookupPolicy() {
     container.innerHTML = html || '<div style="color:#666;">No links found.</div>';
   } catch(e) {
     setStatus('policy-status', 'Request failed: ' + e, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function sendTestClaim() {
+  const btn = document.getElementById('btn-test-claim');
+  btn.disabled = true;
+  setStatus('claims-status', '<span class="spinner"></span> Sending test claim email...');
+  try {
+    const res = await fetch('/api/claims/test', {method: 'POST'});
+    const data = await res.json();
+    if (data.ok) {
+      setStatus('claims-status', 'Test claim sent to ' + esc(data.recipient), 'ok');
+    } else {
+      setStatus('claims-status', 'Failed: ' + esc(data.error), 'err');
+    }
+  } catch(e) {
+    setStatus('claims-status', 'Request failed: ' + e, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function sendClaims() {
+  const btn = document.getElementById('btn-claims');
+  btn.disabled = true;
+  setStatus('claims-status', '<span class="spinner"></span> Sending claims to retailers...');
+  try {
+    const res = await fetch('/api/claims/send', {method: 'POST'});
+    const data = await res.json();
+    if (data.ok) {
+      const r = data.result || {};
+      setStatus('claims-status',
+        `Sent: ${r.sent || 0}, Skipped (no email): ${r.skipped || 0}, Failed: ${r.failed || 0}`, 'ok');
+    } else {
+      setStatus('claims-status', 'Failed: ' + esc(data.error), 'err');
+    }
+  } catch(e) {
+    setStatus('claims-status', 'Request failed: ' + e, 'err');
   }
   btn.disabled = false;
 }
@@ -795,6 +852,35 @@ def check_prices():
             "total_drops": len(drops),
             "all_checks": all_checks,
         })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/claims/test", methods=["POST"])
+def test_claim():
+    try:
+        if gmail.service is None:
+            gmail.authenticate()
+        if not claimer:
+            return jsonify({"ok": False, "error": "ClaimManager not initialized"})
+        success = claimer.send_test_claim()
+        return jsonify({"ok": success, "recipient": claimer.notification_recipient,
+                        "error": None if success else "Send failed — check logs"})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/claims/send", methods=["POST"])
+def send_claims():
+    try:
+        if gmail.service is None:
+            gmail.authenticate()
+        if not claimer:
+            return jsonify({"ok": False, "error": "ClaimManager not initialized"})
+        result = claimer.send_claims()
+        return jsonify({"ok": True, "result": result})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)})

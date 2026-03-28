@@ -4,6 +4,7 @@ import sys
 
 import anthropic
 
+from rover.claimer import ClaimManager
 from rover.config import get_config
 from rover.db import Database
 from rover.gmail import GmailClient
@@ -57,11 +58,17 @@ def main():
     notifier = NotificationManager(
         config=config,
         db=db,
+        policy_lookup=policy_lookup,
+    )
+
+    claimer = ClaimManager(
+        config=config,
+        db=db,
         gmail_client=gmail,
         policy_lookup=policy_lookup,
     )
 
-    scheduler = RoverScheduler(config, db, gmail, parser, price_checker, policy_lookup, notifier=notifier)
+    scheduler = RoverScheduler(config, db, gmail, parser, price_checker, policy_lookup, notifier=notifier, claimer=claimer)
 
     logger.info("Running initial email scan")
     scheduler.scan_emails()

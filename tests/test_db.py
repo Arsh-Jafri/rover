@@ -257,6 +257,30 @@ class TestSavings:
         assert tmp_db.get_new_savings() == []
 
 
+    def test_get_notified_savings(self, tmp_db):
+        pid = tmp_db.add_purchase(
+            gmail_message_id="msg_notif",
+            item_name="Notified Item",
+            price_paid=50.0,
+            product_url="https://example.com/item",
+            retailer="Shop",
+            purchase_date="2026-01-01",
+        )
+        check_id = tmp_db.add_price_check(pid, 40.0, "success")
+
+        # Create savings with different statuses
+        s_new = tmp_db.add_saving(pid, check_id, 50.0, 40.0, 10.0)
+        s_notified = tmp_db.add_saving(pid, check_id, 50.0, 35.0, 15.0)
+        s_claimed = tmp_db.add_saving(pid, check_id, 50.0, 30.0, 20.0)
+
+        tmp_db.update_saving_status(s_notified, "notified")
+        tmp_db.update_saving_status(s_claimed, "claimed")
+
+        notified = tmp_db.get_notified_savings()
+        assert len(notified) == 1
+        assert notified[0]["id"] == s_notified
+
+
 class TestMetadata:
     def test_set_and_get_metadata(self, tmp_db):
         assert tmp_db.get_metadata("last_scan") is None

@@ -1,9 +1,10 @@
 """Email notification manager for Rover price drop alerts."""
 
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 from rover.db import Database
-from rover.gmail import GmailClient
+from rover.emailer import send as send_email
 from rover.logger import get_logger
 from rover.policies import PolicyLookup
 
@@ -17,15 +18,19 @@ class NotificationManager:
         self,
         config: dict,
         db: Database,
-        gmail_client: GmailClient,
         policy_lookup: PolicyLookup,
     ):
         notif_config = config.get("notifications", {})
         self.enabled = notif_config.get("enabled", False)
         self.recipient = notif_config.get("recipient_email")
+        self.sender_email = notif_config.get("sender_email", "rover@tryrover.app")
+        self.sender_name = notif_config.get("sender_name", "Rover")
         self.db = db
-        self.gmail = gmail_client
         self.policy_lookup = policy_lookup
+        # Claims config for generating claim drafts in notifications
+        claims_config = config.get("claims", {})
+        self.claims_enabled = claims_config.get("enabled", False)
+        self.customer_name = claims_config.get("customer_name", "")
 
     def notify_drops(self, drops: list[dict]) -> bool:
         """Send a single consolidated email for all price drops.
@@ -54,10 +59,10 @@ class NotificationManager:
         total_savings = sum(d["savings_amount"] for d in enriched)
         count = len(enriched)
         subject = f"Rover: ${total_savings:.2f} in price drops detected ({count} item{'s' if count != 1 else ''})"
-        html = self._build_html(enriched, total_savings)
+        html = self._build_html(enriched, total_savings, self.claims_enabled, self.customer_name)
 
         try:
-            self.gmail.send_email(self.recipient, subject, html)
+            send_email(self.recipient, subject, html, self.sender_email, self.sender_name)
         except Exception:
             logger.exception("Failed to send notification email")
             return False
@@ -100,7 +105,7 @@ class NotificationManager:
         html = self._build_html(fake_drops, 15.00)
 
         try:
-            self.gmail.send_email(self.recipient, subject, html)
+            send_email(self.recipient, subject, html, self.sender_email, self.sender_name)
             logger.info("Test notification sent to %s", self.recipient)
             return True
         except Exception:
@@ -135,87 +140,146 @@ class NotificationManager:
                 "savings_amount": drop["savings_amount"],
                 "product_url": purchase.get("product_url", ""),
                 "order_number": purchase.get("order_number", ""),
+                "purchase_date": purchase.get("purchase_date", ""),
                 "currency": purchase.get("currency", "USD"),
                 "days_remaining": days_remaining,
                 "saving_id": drop.get("saving_id"),
+                "support_email": retailer_info.support_email if retailer_info else None,
+                "support_url": retailer_info.support_url if retailer_info else None,
+                "domain": domain,
             })
 
         return enriched
 
     @staticmethod
-    def _build_html(drops: list[dict], total_savings: float) -> str:
-        """Build HTML email body with a table of price drops."""
-        count = len(drops)
+    def _days_badge(days: int | None) -> str:
+        """Return an HTML badge for refund window days remaining."""
+        if days is None:
+            return ""
+        font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
+        if days <= 3:
+            return f'<span style="display:inline-block;background:#fef2f2;color:#D32F2F;font-family:{font};font-size:12px;font-weight:600;padding:2px 10px;border-radius:9999px">{days}d left</span>'
+        if days <= 7:
+            return f'<span style="display:inline-block;background:#fffbeb;color:#d97706;font-family:{font};font-size:12px;font-weight:600;padding:2px 10px;border-radius:9999px">{days}d left</span>'
+        return f'<span style="color:rgba(26,29,30,0.5);font-family:{font};font-size:13px">{days}d left</span>'
 
-        rows = ""
-        for d in drops:
+    @staticmethod
+    def _build_html(
+        drops: list[dict],
+        total_savings: float,
+        claims_enabled: bool = False,
+        customer_name: str = "",
+    ) -> str:
+        """Build branded HTML email body with price drops and claim actions."""
+        count = len(drops)
+        font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
+
+        # Build item rows
+        items_html = ""
+        for i, d in enumerate(drops):
+            border = "border-bottom:1px solid rgba(0,0,0,0.06);" if i < len(drops) - 1 else ""
+
             item_name = d["item_name"]
             product_url = d.get("product_url", "")
             if product_url:
-                item_cell = f'<a href="{product_url}" style="color:#1a73e8;text-decoration:none">{item_name}</a>'
+                name_el = f'<a href="{product_url}" style="color:#1A1D1E;text-decoration:none;font-family:{font};font-weight:700;font-size:15px;letter-spacing:-0.01em">{item_name}</a>'
             else:
-                item_cell = item_name
+                name_el = f'<span style="color:#1A1D1E;font-family:{font};font-weight:700;font-size:15px;letter-spacing:-0.01em">{item_name}</span>'
 
-            days = d.get("days_remaining")
-            if days is None:
-                days_cell = "—"
-            elif days <= 3:
-                days_cell = f'<span style="color:#d32f2f;font-weight:bold">{days}d</span>'
-            elif days <= 7:
-                days_cell = f'<span style="color:#f57c00;font-weight:bold">{days}d</span>'
-            else:
-                days_cell = f"{days}d"
+            days_badge = NotificationManager._days_badge(d.get("days_remaining"))
+            days_row = f'<div style="margin-bottom:6px">{days_badge}</div>' if days_badge else ""
 
-            rows += f"""<tr>
-                <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{item_cell}</td>
-                <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{d['retailer']}</td>
-                <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;text-align:right">${d['price_paid']:.2f}</td>
-                <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;text-align:right">${d['current_price']:.2f}</td>
-                <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;text-align:right;color:#2e7d32;font-weight:bold">${d['savings_amount']:.2f}</td>
-                <td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;text-align:center">{days_cell}</td>
-            </tr>"""
+            items_html += f"""
+                <div style="padding:16px 0;{border}">
+                    {days_row}
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+                        <td style="vertical-align:middle">
+                            {name_el}
+                            <div style="color:rgba(26,29,30,0.35);font-family:{font};font-size:13px;margin-top:2px">{d['retailer']} &middot; #{d.get('order_number', '')}</div>
+                        </td>
+                        <td style="text-align:right;vertical-align:middle;white-space:nowrap">
+                            <div style="font-family:{font};font-weight:700;color:#1A1D1E;font-size:16px;letter-spacing:-0.01em">-${d['savings_amount']:.2f}</div>
+                            <div style="font-family:{font};font-size:12px;color:rgba(26,29,30,0.25);margin-top:2px">${d['price_paid']:.2f} &rarr; ${d['current_price']:.2f}</div>
+                        </td>
+                    </tr></table>
+                </div>"""
+
+        # Build per-retailer claim draft sections
+        next_steps_html = ""
+        if claims_enabled and customer_name:
+            from rover.claimer import ClaimManager
+
+            retailer_groups = defaultdict(list)
+            for d in drops:
+                retailer_groups[d.get("retailer", "Unknown")].append(d)
+
+            for retailer, items in retailer_groups.items():
+                support_email = items[0].get("support_email")
+                support_url = items[0].get("support_url")
+
+                if support_email:
+                    next_steps_html += f"""
+                    <div style="margin-bottom:12px;padding:12px;background:#ecfdf5;border:1px solid rgba(0,0,0,0.06);border-radius:12px;font-family:{font}">
+                        <strong style="color:#059669">{retailer}</strong>
+                        <span style="color:rgba(26,29,30,0.5);font-size:13px"> — Claim will be sent automatically to {support_email}</span>
+                    </div>"""
+                elif support_url:
+                    draft = ClaimManager.build_claim_message(customer_name, items, retailer)
+                    escaped_draft = draft.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    next_steps_html += f"""
+                    <div style="margin-bottom:12px;padding:12px;background:#fffbeb;border:1px solid rgba(0,0,0,0.06);border-radius:12px;font-family:{font}">
+                        <strong style="color:#d97706">{retailer}</strong>
+                        <span style="color:rgba(26,29,30,0.5);font-size:13px"> — Submit via
+                            <a href="{support_url}" style="color:#F55446;text-decoration:none">support portal</a>
+                        </span>
+                        <details style="margin-top:8px">
+                            <summary style="cursor:pointer;color:#F55446;font-size:13px">Copy-paste claim message</summary>
+                            <pre style="margin:8px 0 0 0;padding:12px;background:#FAFAFA;border:1px solid rgba(0,0,0,0.06);border-radius:8px;font-size:12px;white-space:pre-wrap;font-family:inherit;color:#1A1D1E">{escaped_draft}</pre>
+                        </details>
+                    </div>"""
+                else:
+                    next_steps_html += f"""
+                    <div style="margin-bottom:12px;padding:12px;background:#FAFAFA;border:1px solid rgba(0,0,0,0.06);border-radius:12px;font-family:{font}">
+                        <strong style="color:rgba(26,29,30,0.5)">{retailer}</strong>
+                        <span style="color:rgba(26,29,30,0.35);font-size:13px"> — Contact retailer directly to request a price adjustment</span>
+                    </div>"""
+
+        next_steps_section = ""
+        if next_steps_html:
+            next_steps_section = f"""
+            <div style="margin-top:24px;padding-top:20px;border-top:1px solid rgba(0,0,0,0.06)">
+                <h2 style="margin:0 0 12px 0;font-family:{font};font-size:16px;font-weight:700;color:#1A1D1E;letter-spacing:-0.01em">Next Steps</h2>
+                {next_steps_html}
+            </div>"""
 
         html = f"""<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
-<div style="max-width:640px;margin:20px auto;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body style="margin:0;padding:0;background:transparent;font-family:{font};-webkit-font-smoothing:antialiased">
+<div style="max-width:600px;margin:20px auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid rgba(0,0,0,0.06)">
 
-    <div style="background:#1a73e8;padding:24px 28px">
-        <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:600">Rover Price Alert</h1>
+    <div style="padding:28px 28px 0 28px">
+        <img src="https://rover-web.vercel.app/_next/image?url=%2FRoverBlackLogo.png&amp;w=256&amp;q=75" alt="Rover" style="height:36px;width:auto">
     </div>
 
-    <div style="padding:24px 28px">
-        <p style="margin:0 0 20px 0;font-size:16px;color:#333">
-            <strong style="color:#2e7d32;font-size:20px">${total_savings:.2f}</strong>
-            in potential savings across <strong>{count}</strong> item{'s' if count != 1 else ''}.
-        </p>
+    <div style="padding:20px 28px">
+        <div style="background:#FAFAFA;border:1px solid rgba(0,0,0,0.06);border-radius:16px;padding:28px;padding-bottom:12px;margin-bottom:24px;text-align:center">
+            <div style="font-family:{font};font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.15em;color:rgba(26,29,30,0.25);margin-bottom:12px">Rover found savings</div>
+            <div style="font-family:{font};font-size:44px;font-weight:800;color:#1A1D1E;letter-spacing:-0.03em">${total_savings:.2f}</div>
+            <div style="font-family:{font};font-size:14px;color:rgba(26,29,30,0.5);margin-top:6px">{count} item{'s' if count != 1 else ''} ready for you to claim</div>
+            <img src="https://i.ibb.co/qqZn4R5/Untitled-design.png" alt="Rover" style="display:block;width:32%;max-width:120px;height:auto;margin:16px auto 0 auto">
+        </div>
 
-        <table style="width:100%;border-collapse:collapse;font-size:14px">
-            <thead>
-                <tr style="background:#f8f9fa">
-                    <th style="padding:10px 12px;text-align:left;border-bottom:2px solid #e0e0e0;color:#666">Item</th>
-                    <th style="padding:10px 12px;text-align:left;border-bottom:2px solid #e0e0e0;color:#666">Retailer</th>
-                    <th style="padding:10px 12px;text-align:right;border-bottom:2px solid #e0e0e0;color:#666">Paid</th>
-                    <th style="padding:10px 12px;text-align:right;border-bottom:2px solid #e0e0e0;color:#666">Now</th>
-                    <th style="padding:10px 12px;text-align:right;border-bottom:2px solid #e0e0e0;color:#666">You Save</th>
-                    <th style="padding:10px 12px;text-align:center;border-bottom:2px solid #e0e0e0;color:#666">Days Left</th>
-                </tr>
-            </thead>
-            <tbody>
-                {rows}
-            </tbody>
-        </table>
+        {items_html}
 
-        <p style="margin:20px 0 0 0;font-size:13px;color:#888">
-            Visit the retailer to request a price adjustment or contact their support for a refund of the difference.
-        </p>
+        {next_steps_section}
     </div>
 
-    <div style="background:#f8f9fa;padding:16px 28px;border-top:1px solid #e0e0e0">
-        <p style="margin:0;font-size:12px;color:#999">
-            Sent by Rover — Automated Price Adjustment Agent
-        </p>
+    <div style="background:#FAFAFA;padding:16px 28px;border-top:1px solid rgba(0,0,0,0.06)">
+        <div style="font-family:{font};font-size:12px;color:rgba(26,29,30,0.35)">&copy; 2026 Rover. All rights reserved.</div>
     </div>
 
 </div>

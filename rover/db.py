@@ -201,6 +201,12 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_notified_savings(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM savings WHERE status = 'notified'"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def update_saving_status(self, saving_id: int, status: str) -> None:
         self.conn.execute(
             "UPDATE savings SET status = ? WHERE id = ?", (status, saving_id)

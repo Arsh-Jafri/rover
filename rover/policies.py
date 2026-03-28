@@ -51,6 +51,10 @@ class PolicyLookup:
         "price match", "price protection",
     ]
 
+    CONTACT_KEYWORDS = [
+        "contact", "help", "support", "customer service",
+    ]
+
     def __init__(
         self,
         db: Database,
@@ -213,6 +217,72 @@ class PolicyLookup:
                     break
         return matches
 
+    def _find_contact_links(self, links: list[dict]) -> list[dict]:
+        """Filter footer links that likely point to a contact/support page."""
+        matches = []
+        for link in links:
+            text = link["text"]
+            href = link["href"].lower()
+            for keyword in self.CONTACT_KEYWORDS:
+                if keyword in text or keyword in href:
+                    matches.append(link)
+                    break
+        return matches
+
+    @staticmethod
+    def _extract_email_from_text(text: str) -> str | None:
+        """Extract a support email from text, skipping noreply addresses."""
+        emails = _EMAIL_PATTERN.findall(text)
+        for email in emails:
+            lower = email.lower()
+            if any(skip in lower for skip in ["noreply", "no-reply", "donotreply", "mailer-daemon"]):
+                continue
+            return email
+        return None
+
+    def discover_support_email(self, domain: str) -> str | None:
+        """Find a support email for a retailer by scraping contact/help pages.
+
+        Checks the DB first, then scrapes the retailer's contact pages.
+        Returns the email address or None.
+        """
+        existing = self.db.get_retailer_by_domain(domain)
+        if existing and existing.get("support_email"):
+            return existing["support_email"]
+
+        clean_domain = domain.removeprefix("www.")
+        homepage_url = f"https://www.{clean_domain}"
+        html = self.scraper.fetch(homepage_url)
+        if not html:
+            return None
+
+        footer_links = self.scraper.extract_footer_links(html, homepage_url)
+        contact_links = self._find_contact_links(footer_links)
+
+        for link in contact_links:
+            url = link["href"]
+            page_html = self.scraper.fetch(url)
+            if not page_html:
+                continue
+            cleaned = self.scraper.clean_html(page_html, url=url)
+            email = self._extract_email_from_text(cleaned)
+            if email:
+                # Update retailer record with discovered email
+                if existing:
+                    self.db.upsert_retailer(
+                        name=existing["name"],
+                        domain=domain,
+                        refund_window_days=existing["refund_window_days"],
+                        support_email=email,
+                        support_url=existing.get("support_url"),
+                        policy_url=existing.get("policy_url"),
+                        source=existing.get("source", "manual"),
+                    )
+                logger.info("Discovered support email for %s: %s", domain, email)
+                return email
+
+        return None
+
     def _extract_policy_with_llm(self, content: str) -> dict:
         """Extract refund window from policy page text using an LLM,
         and contact email using regex.
@@ -243,15 +313,7 @@ class PolicyLookup:
         except anthropic.APIError as exc:
             logger.error("LLM API error extracting policy: %s", exc)
 
-        # Extract support email with regex (skip noreply/automated addresses)
-        emails = _EMAIL_PATTERN.findall(content)
-        for email in emails:
-            lower = email.lower()
-            if any(skip in lower for skip in ["noreply", "no-reply", "donotreply", "mailer-daemon"]):
-                continue
-            result["support_email"] = email
-            break
-
+        result["support_email"] = self._extract_email_from_text(content)
         return result
 
     def discover_policy(self, domain: str, retailer_name: str | None = None) -> RetailerInfo:

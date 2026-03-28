@@ -26,5 +26,11 @@ logging:
   level: INFO
   file: rover.log
 
+notifications:
+  enabled: false
+  recipient_email: "you@gmail.com"
+  sender_email: "rover@tryrover.app"
+  sender_name: "Rover"
+
 retailers_yaml: retailers.yaml
 default_refund_window_days: 14
