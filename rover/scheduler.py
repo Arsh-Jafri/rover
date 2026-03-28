@@ -54,9 +54,9 @@ class RoverScheduler:
         )
         self.scheduler.start()
 
-    def scan_emails(self):
-        last_scan = self.db.get_metadata("last_email_scan_date")
-        logger.info("Scanning emails (after %s)", last_scan or "all time")
+    def scan_emails(self, user_id: str):
+        last_scan = self.db.get_metadata(user_id, "last_email_scan_date")
+        logger.info("Scanning emails for user %s (after %s)", user_id, last_scan or "all time")
 
         emails = self.gmail.fetch_emails(after_date=last_scan)
         logger.info("Fetched %d emails", len(emails))
@@ -83,12 +83,13 @@ class RoverScheduler:
 
             for idx, item in enumerate(items):
                 if order_number and self.db.has_purchase_for_item(
-                    item["retailer"], order_number, item["item_name"]
+                    user_id, item["retailer"], order_number, item["item_name"]
                 ):
                     logger.info("Duplicate item '%s' in order %s — skipping", item["item_name"], order_number)
                     continue
                 item_msg_id = f"{email['id']}:{idx}" if len(items) > 1 else email["id"]
                 purchase_id = self.db.add_purchase(
+                    user_id=user_id,
                     gmail_message_id=item_msg_id,
                     item_name=item["item_name"],
                     price_paid=item["price_paid"],
@@ -105,7 +106,7 @@ class RoverScheduler:
             self._enrich_retailer(items[0])
 
         from datetime import date
-        self.db.set_metadata("last_email_scan_date", date.today().isoformat())
+        self.db.set_metadata(user_id, "last_email_scan_date", date.today().isoformat())
 
         logger.info(
             "Email scan complete: %d fetched, %d receipts, %d new purchases",
@@ -114,27 +115,27 @@ class RoverScheduler:
             purchases_stored,
         )
 
-    def check_prices(self):
+    def check_prices(self, user_id: str):
         if not self.price_checker:
             logger.warning("PriceChecker not available — skipping price check")
             return
-        logger.info("Starting price check run")
-        drops = self.price_checker.check_all_prices()
+        logger.info("Starting price check run for user %s", user_id)
+        drops = self.price_checker.check_all_prices(user_id)
         logger.info("Price check complete: %d drops detected", len(drops))
 
         if drops and self.notifier:
             try:
-                self.notifier.notify_drops(drops)
+                self.notifier.notify_drops(user_id, drops)
             except Exception:
                 logger.exception("Notification failed — drops saved in DB, will retry")
 
-    def send_claims(self):
+    def send_claims(self, user_id: str):
         if not self.claimer:
             logger.warning("ClaimManager not available — skipping claims")
             return
-        logger.info("Starting claim send run")
+        logger.info("Starting claim send run for user %s", user_id)
         try:
-            result = self.claimer.send_claims()
+            result = self.claimer.send_claims(user_id)
             logger.info("Claims complete: %s", result)
         except Exception:
             logger.exception("Claim sending failed — will retry next run")

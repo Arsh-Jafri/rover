@@ -23,13 +23,11 @@ class ClaimManager:
     ):
         claims_config = config.get("claims", {})
         self.enabled = claims_config.get("enabled", False)
-        self.customer_name = claims_config.get("customer_name", "")
         self.db = db
         self.gmail = gmail_client
         self.policy_lookup = policy_lookup
-        self.notification_recipient = config.get("notifications", {}).get("recipient_email")
 
-    def send_claims(self) -> dict:
+    def send_claims(self, user_id: str) -> dict:
         """Send claim emails to retailers for all notified savings.
 
         Groups items by retailer, discovers support emails, and sends
@@ -44,11 +42,17 @@ class ClaimManager:
             logger.debug("Claims disabled — skipping")
             return result
 
-        if not self.customer_name:
-            logger.warning("No customer_name configured — skipping claims")
+        user = self.db.get_user(user_id)
+        if not user:
+            logger.warning("User %s not found — skipping claims", user_id)
             return result
 
-        savings = self.db.get_notified_savings()
+        customer_name = user.get("name", "")
+        if not customer_name:
+            logger.warning("No name set for user %s — skipping claims", user_id)
+            return result
+
+        savings = self.db.get_notified_savings(user_id)
         if not savings:
             logger.debug("No notified savings to claim")
             return result
@@ -72,7 +76,7 @@ class ClaimManager:
                 continue
 
             subject = self._build_subject(items)
-            html = self._build_claim_html(self.customer_name, items, retailer_name)
+            html = self._build_claim_html(customer_name, items, retailer_name)
 
             try:
                 self.gmail.send_email(support_email, subject, html)
@@ -98,11 +102,15 @@ class ClaimManager:
         logger.info("Claims complete: %s", result)
         return result
 
-    def send_test_claim(self) -> bool:
+    def send_test_claim(self, user_id: str) -> bool:
         """Send a test claim email to the user's own email for verification."""
-        if not self.notification_recipient:
-            logger.warning("No recipient_email configured — can't send test claim")
+        user = self.db.get_user(user_id)
+        if not user:
+            logger.warning("User %s not found — can't send test claim", user_id)
             return False
+
+        recipient = user["email"]
+        customer_name = user.get("name", "Test Customer")
 
         fake_items = [{
             "item_name": "Test Product - Classic Tee (Black, M)",
@@ -116,12 +124,11 @@ class ClaimManager:
         }]
 
         subject = "Rover Test: Price Adjustment Claim Email"
-        name = self.customer_name or "Test Customer"
-        html = self._build_claim_html(name, fake_items, "Example Store")
+        html = self._build_claim_html(customer_name, fake_items, "Example Store")
 
         try:
-            self.gmail.send_email(self.notification_recipient, subject, html)
-            logger.info("Test claim sent to %s", self.notification_recipient)
+            self.gmail.send_email(recipient, subject, html)
+            logger.info("Test claim sent to %s", recipient)
             return True
         except Exception:
             logger.exception("Failed to send test claim")

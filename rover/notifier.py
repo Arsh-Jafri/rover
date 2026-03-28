@@ -22,7 +22,6 @@ class NotificationManager:
     ):
         notif_config = config.get("notifications", {})
         self.enabled = notif_config.get("enabled", False)
-        self.recipient = notif_config.get("recipient_email")
         self.sender_email = notif_config.get("sender_email", "rover@tryrover.app")
         self.sender_name = notif_config.get("sender_name", "Rover")
         self.db = db
@@ -30,12 +29,12 @@ class NotificationManager:
         # Claims config for generating claim drafts in notifications
         claims_config = config.get("claims", {})
         self.claims_enabled = claims_config.get("enabled", False)
-        self.customer_name = claims_config.get("customer_name", "")
 
-    def notify_drops(self, drops: list[dict]) -> bool:
+    def notify_drops(self, user_id: str, drops: list[dict]) -> bool:
         """Send a single consolidated email for all price drops.
 
         Args:
+            user_id: The user to notify.
             drops: List of drop dicts from PriceChecker.check_all_prices().
 
         Returns:
@@ -45,9 +44,13 @@ class NotificationManager:
             logger.debug("Notifications disabled — skipping")
             return False
 
-        if not self.recipient:
-            logger.warning("No recipient_email configured — skipping notification")
+        user = self.db.get_user(user_id)
+        if not user:
+            logger.warning("User %s not found — skipping notification", user_id)
             return False
+
+        recipient = user["email"]
+        customer_name = user.get("name", "")
 
         if not drops:
             return False
@@ -59,10 +62,10 @@ class NotificationManager:
         total_savings = sum(d["savings_amount"] for d in enriched)
         count = len(enriched)
         subject = f"Rover: ${total_savings:.2f} in price drops detected ({count} item{'s' if count != 1 else ''})"
-        html = self._build_html(enriched, total_savings, self.claims_enabled, self.customer_name)
+        html = self._build_html(enriched, total_savings, self.claims_enabled, customer_name)
 
         try:
-            send_email(self.recipient, subject, html, self.sender_email, self.sender_name)
+            send_email(recipient, subject, html, self.sender_email, self.sender_name)
         except Exception:
             logger.exception("Failed to send notification email")
             return False
@@ -82,11 +85,14 @@ class NotificationManager:
         )
         return True
 
-    def send_test_notification(self) -> bool:
+    def send_test_notification(self, user_id: str) -> bool:
         """Send a test notification with sample data for dev/testing."""
-        if not self.recipient:
-            logger.warning("No recipient_email configured — can't send test")
+        user = self.db.get_user(user_id)
+        if not user:
+            logger.warning("User %s not found — can't send test", user_id)
             return False
+
+        recipient = user["email"]
 
         fake_drops = [{
             "item_name": "Test Product - Classic Tee",
@@ -105,8 +111,8 @@ class NotificationManager:
         html = self._build_html(fake_drops, 15.00)
 
         try:
-            send_email(self.recipient, subject, html, self.sender_email, self.sender_name)
-            logger.info("Test notification sent to %s", self.recipient)
+            send_email(recipient, subject, html, self.sender_email, self.sender_name)
+            logger.info("Test notification sent to %s", recipient)
             return True
         except Exception:
             logger.exception("Failed to send test notification")

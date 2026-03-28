@@ -1,50 +1,77 @@
-import sqlite3
+import os
 from datetime import datetime, timezone
+
+import psycopg2
+import psycopg2.extras
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT UNIQUE NOT NULL,
+    name TEXT,
+    supabase_auth_id UUID UNIQUE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_gmail_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    encrypted_access_token BYTEA,
+    encrypted_refresh_token BYTEA,
+    token_expiry TIMESTAMPTZ,
+    gmail_email TEXT,
+    connected_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id)
+);
+
 CREATE TABLE IF NOT EXISTS purchases (
-    id INTEGER PRIMARY KEY,
-    gmail_message_id TEXT UNIQUE,
+    id SERIAL PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    gmail_message_id TEXT,
     item_name TEXT,
-    price_paid REAL,
+    price_paid DOUBLE PRECISION,
     product_url TEXT,
     retailer TEXT,
     purchase_date TEXT,
     currency TEXT DEFAULT 'USD',
     order_number TEXT,
     raw_email_snippet TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    url_search_attempted INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, gmail_message_id)
 );
 
 CREATE TABLE IF NOT EXISTS price_checks (
-    id INTEGER PRIMARY KEY,
-    purchase_id INTEGER NOT NULL REFERENCES purchases(id),
-    current_price REAL,
-    checked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    id SERIAL PRIMARY KEY,
+    purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+    current_price DOUBLE PRECISION,
+    checked_at TIMESTAMPTZ DEFAULT now(),
     status TEXT CHECK(status IN ('success', 'scrape_failed', 'parse_failed')),
     error_detail TEXT
 );
 
 CREATE TABLE IF NOT EXISTS savings (
-    id INTEGER PRIMARY KEY,
-    purchase_id INTEGER NOT NULL REFERENCES purchases(id),
-    price_check_id INTEGER NOT NULL REFERENCES price_checks(id),
-    original_price REAL,
-    dropped_price REAL,
-    savings_amount REAL,
-    detected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    id SERIAL PRIMARY KEY,
+    purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+    price_check_id INTEGER NOT NULL REFERENCES price_checks(id) ON DELETE CASCADE,
+    original_price DOUBLE PRECISION,
+    dropped_price DOUBLE PRECISION,
+    savings_amount DOUBLE PRECISION,
+    detected_at TIMESTAMPTZ DEFAULT now(),
     status TEXT DEFAULT 'new' CHECK(status IN ('new', 'notified', 'claimed'))
 );
 
 CREATE TABLE IF NOT EXISTS metadata (
-    key TEXT PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
     value TEXT,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS retailers (
-    id INTEGER PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     name TEXT,
     domain TEXT UNIQUE,
     refund_window_days INTEGER,
@@ -52,38 +79,110 @@ CREATE TABLE IF NOT EXISTS retailers (
     support_url TEXT,
     policy_url TEXT,
     source TEXT DEFAULT 'manual' CHECK(source IN ('manual', 'scraped')),
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMPTZ DEFAULT now()
 );
 """
 
 
 class Database:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
-        self.conn.executescript(SCHEMA)
-        self._migrate()
-        self.conn.commit()
+    def __init__(self, database_url: str | None = None):
+        self.database_url = database_url or os.environ.get("DATABASE_URL")
+        if not self.database_url:
+            raise ValueError("DATABASE_URL must be provided or set as environment variable")
+        self.conn = psycopg2.connect(self.database_url)
+        self.conn.autocommit = True
+        self._init_schema()
 
-    def _migrate(self):
-        """Add columns that may not exist in older databases."""
-        columns = {
-            row[1]
-            for row in self.conn.execute("PRAGMA table_info(purchases)").fetchall()
-        }
-        if "order_number" not in columns:
-            self.conn.execute("ALTER TABLE purchases ADD COLUMN order_number TEXT")
-        if "url_search_attempted" not in columns:
-            self.conn.execute("ALTER TABLE purchases ADD COLUMN url_search_attempted INTEGER DEFAULT 0")
+    def _init_schema(self):
+        with self.conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+            cur.execute(SCHEMA)
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def _cursor(self):
+        return self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # ------------------------------------------------------------------
+    # Users
+    # ------------------------------------------------------------------
+
+    def create_user(self, email: str, supabase_auth_id: str, name: str | None = None) -> dict:
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO users (email, supabase_auth_id, name)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (supabase_auth_id) DO UPDATE SET email = EXCLUDED.email
+                   RETURNING *""",
+                (email, supabase_auth_id, name),
+            )
+            return dict(cur.fetchone())
+
+    def get_user_by_auth_id(self, supabase_auth_id: str) -> dict | None:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE supabase_auth_id = %s", (supabase_auth_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_user(self, user_id: str) -> dict | None:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Gmail Tokens
+    # ------------------------------------------------------------------
+
+    def store_gmail_token(
+        self,
+        user_id: str,
+        encrypted_access_token: bytes,
+        encrypted_refresh_token: bytes,
+        token_expiry: str | None = None,
+        gmail_email: str | None = None,
+    ) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO user_gmail_tokens
+                   (user_id, encrypted_access_token, encrypted_refresh_token, token_expiry, gmail_email)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (user_id) DO UPDATE SET
+                     encrypted_access_token = EXCLUDED.encrypted_access_token,
+                     encrypted_refresh_token = EXCLUDED.encrypted_refresh_token,
+                     token_expiry = EXCLUDED.token_expiry,
+                     gmail_email = COALESCE(EXCLUDED.gmail_email, user_gmail_tokens.gmail_email),
+                     connected_at = now()""",
+                (user_id, encrypted_access_token, encrypted_refresh_token, token_expiry, gmail_email),
+            )
+
+    def get_gmail_token(self, user_id: str) -> dict | None:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM user_gmail_tokens WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def delete_gmail_token(self, user_id: str) -> None:
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM user_gmail_tokens WHERE user_id = %s", (user_id,))
+
+    def get_users_with_gmail(self) -> list[dict]:
+        """Get all users who have connected their Gmail account."""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT u.* FROM users u
+                   JOIN user_gmail_tokens t ON u.id = t.user_id"""
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Purchases (tenant-scoped)
+    # ------------------------------------------------------------------
+
     def add_purchase(
         self,
+        user_id: str,
         gmail_message_id: str,
         item_name: str,
         price_paid: float,
@@ -94,65 +193,72 @@ class Database:
         order_number: str | None = None,
         raw_email_snippet: str | None = None,
     ) -> int | None:
-        cursor = self.conn.execute(
-            """INSERT OR IGNORE INTO purchases
-               (gmail_message_id, item_name, price_paid, product_url, retailer,
-                purchase_date, currency, order_number, raw_email_snippet)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (gmail_message_id, item_name, price_paid, product_url, retailer,
-             purchase_date, currency, order_number, raw_email_snippet),
-        )
-        self.conn.commit()
-        if cursor.rowcount == 0:
-            return None
-        return cursor.lastrowid
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO purchases
+                   (user_id, gmail_message_id, item_name, price_paid, product_url, retailer,
+                    purchase_date, currency, order_number, raw_email_snippet)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (user_id, gmail_message_id) DO NOTHING
+                   RETURNING id""",
+                (user_id, gmail_message_id, item_name, price_paid, product_url, retailer,
+                 purchase_date, currency, order_number, raw_email_snippet),
+            )
+            row = cur.fetchone()
+            return row["id"] if row else None
 
-    def has_purchase_for_item(self, retailer: str, order_number: str, item_name: str) -> bool:
-        """Check if a purchase already exists for the given retailer + order + item."""
-        row = self.conn.execute(
-            "SELECT 1 FROM purchases WHERE retailer = ? AND order_number = ? AND item_name = ? LIMIT 1",
-            (retailer, order_number, item_name),
-        ).fetchone()
-        return row is not None
+    def has_purchase_for_item(self, user_id: str, retailer: str, order_number: str, item_name: str) -> bool:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM purchases WHERE user_id = %s AND retailer = %s AND order_number = %s AND item_name = %s LIMIT 1",
+                (user_id, retailer, order_number, item_name),
+            )
+            return cur.fetchone() is not None
 
     def update_purchase_url(self, purchase_id: int, product_url: str) -> None:
-        """Set the product_url for a purchase."""
-        self.conn.execute(
-            "UPDATE purchases SET product_url = ? WHERE id = ?",
-            (product_url, purchase_id),
-        )
-        self.conn.commit()
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE purchases SET product_url = %s WHERE id = %s",
+                (product_url, purchase_id),
+            )
 
     def mark_url_search_attempted(self, purchase_id: int) -> None:
-        """Mark that we've already tried to find a product URL for this purchase."""
-        self.conn.execute(
-            "UPDATE purchases SET url_search_attempted = 1 WHERE id = ?",
-            (purchase_id,),
-        )
-        self.conn.commit()
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE purchases SET url_search_attempted = 1 WHERE id = %s",
+                (purchase_id,),
+            )
 
-    def get_purchases_needing_url(self) -> list[dict]:
-        """Get purchases that have no product_url and haven't been searched yet."""
-        rows = self.conn.execute(
-            "SELECT * FROM purchases WHERE product_url IS NULL AND url_search_attempted = 0"
-        ).fetchall()
-        return [dict(r) for r in rows]
+    def get_purchases_needing_url(self, user_id: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM purchases WHERE user_id = %s AND product_url IS NULL AND url_search_attempted = 0",
+                (user_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
 
     def get_purchase(self, purchase_id: int) -> dict | None:
-        row = self.conn.execute(
-            "SELECT * FROM purchases WHERE id = ?", (purchase_id,)
-        ).fetchone()
-        return dict(row) if row else None
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM purchases WHERE id = %s", (purchase_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
-    def get_active_purchases(self) -> list[dict]:
-        rows = self.conn.execute("SELECT * FROM purchases").fetchall()
-        return [dict(r) for r in rows]
+    def get_active_purchases(self, user_id: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM purchases WHERE user_id = %s", (user_id,))
+            return [dict(r) for r in cur.fetchall()]
 
-    def get_purchases_with_url(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM purchases WHERE product_url IS NOT NULL"
-        ).fetchall()
-        return [dict(r) for r in rows]
+    def get_purchases_with_url(self, user_id: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM purchases WHERE user_id = %s AND product_url IS NOT NULL",
+                (user_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Price Checks
+    # ------------------------------------------------------------------
 
     def add_price_check(
         self,
@@ -161,22 +267,29 @@ class Database:
         status: str,
         error_detail: str | None = None,
     ) -> int:
-        cursor = self.conn.execute(
-            """INSERT INTO price_checks (purchase_id, current_price, status, error_detail)
-               VALUES (?, ?, ?, ?)""",
-            (purchase_id, current_price, status, error_detail),
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO price_checks (purchase_id, current_price, status, error_detail)
+                   VALUES (%s, %s, %s, %s)
+                   RETURNING id""",
+                (purchase_id, current_price, status, error_detail),
+            )
+            return cur.fetchone()["id"]
 
     def get_latest_price_check(self, purchase_id: int) -> dict | None:
-        row = self.conn.execute(
-            """SELECT * FROM price_checks
-               WHERE purchase_id = ?
-               ORDER BY checked_at DESC LIMIT 1""",
-            (purchase_id,),
-        ).fetchone()
-        return dict(row) if row else None
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT * FROM price_checks
+                   WHERE purchase_id = %s
+                   ORDER BY checked_at DESC LIMIT 1""",
+                (purchase_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Savings
+    # ------------------------------------------------------------------
 
     def add_saving(
         self,
@@ -186,52 +299,72 @@ class Database:
         dropped_price: float,
         savings_amount: float,
     ) -> int:
-        cursor = self.conn.execute(
-            """INSERT INTO savings
-               (purchase_id, price_check_id, original_price, dropped_price, savings_amount)
-               VALUES (?, ?, ?, ?, ?)""",
-            (purchase_id, price_check_id, original_price, dropped_price, savings_amount),
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO savings
+                   (purchase_id, price_check_id, original_price, dropped_price, savings_amount)
+                   VALUES (%s, %s, %s, %s, %s)
+                   RETURNING id""",
+                (purchase_id, price_check_id, original_price, dropped_price, savings_amount),
+            )
+            return cur.fetchone()["id"]
 
-    def get_new_savings(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM savings WHERE status = 'new'"
-        ).fetchall()
-        return [dict(r) for r in rows]
+    def get_new_savings(self, user_id: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT s.* FROM savings s
+                   JOIN purchases p ON s.purchase_id = p.id
+                   WHERE p.user_id = %s AND s.status = 'new'""",
+                (user_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
 
-    def get_notified_savings(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM savings WHERE status = 'notified'"
-        ).fetchall()
-        return [dict(r) for r in rows]
+    def get_notified_savings(self, user_id: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT s.* FROM savings s
+                   JOIN purchases p ON s.purchase_id = p.id
+                   WHERE p.user_id = %s AND s.status = 'notified'""",
+                (user_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
 
     def update_saving_status(self, saving_id: int, status: str) -> None:
-        self.conn.execute(
-            "UPDATE savings SET status = ? WHERE id = ?", (status, saving_id)
-        )
-        self.conn.commit()
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE savings SET status = %s WHERE id = %s", (status, saving_id)
+            )
 
-    def get_metadata(self, key: str) -> str | None:
-        row = self.conn.execute(
-            "SELECT value FROM metadata WHERE key = ?", (key,)
-        ).fetchone()
-        return row["value"] if row else None
+    # ------------------------------------------------------------------
+    # Metadata (tenant-scoped)
+    # ------------------------------------------------------------------
 
-    def set_metadata(self, key: str, value: str) -> None:
-        self.conn.execute(
-            """INSERT INTO metadata (key, value, updated_at) VALUES (?, ?, ?)
-               ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?""",
-            (key, value, self._now(), value, self._now()),
-        )
-        self.conn.commit()
+    def get_metadata(self, user_id: str, key: str) -> str | None:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT value FROM metadata WHERE user_id = %s AND key = %s",
+                (user_id, key),
+            )
+            row = cur.fetchone()
+            return row["value"] if row else None
+
+    def set_metadata(self, user_id: str, key: str, value: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO metadata (user_id, key, value, updated_at) VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at""",
+                (user_id, key, value, self._now()),
+            )
+
+    # ------------------------------------------------------------------
+    # Retailers (global — shared across users)
+    # ------------------------------------------------------------------
 
     def get_retailer_by_domain(self, domain: str) -> dict | None:
-        row = self.conn.execute(
-            "SELECT * FROM retailers WHERE domain = ?", (domain,)
-        ).fetchone()
-        return dict(row) if row else None
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM retailers WHERE domain = %s", (domain,))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
     def upsert_retailer(
         self,
@@ -243,15 +376,123 @@ class Database:
         policy_url: str | None = None,
         source: str = "manual",
     ) -> int:
-        cursor = self.conn.execute(
-            """INSERT INTO retailers
-               (name, domain, refund_window_days, support_email, support_url, policy_url, source, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(domain) DO UPDATE SET
-                 name = ?, refund_window_days = ?, support_email = ?, support_url = ?,
-                 policy_url = ?, source = ?, updated_at = ?""",
-            (name, domain, refund_window_days, support_email, support_url, policy_url, source, self._now(),
-             name, refund_window_days, support_email, support_url, policy_url, source, self._now()),
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO retailers
+                   (name, domain, refund_window_days, support_email, support_url, policy_url, source, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (domain) DO UPDATE SET
+                     name = EXCLUDED.name,
+                     refund_window_days = EXCLUDED.refund_window_days,
+                     support_email = EXCLUDED.support_email,
+                     support_url = EXCLUDED.support_url,
+                     policy_url = EXCLUDED.policy_url,
+                     source = EXCLUDED.source,
+                     updated_at = EXCLUDED.updated_at
+                   RETURNING id""",
+                (name, domain, refund_window_days, support_email, support_url, policy_url, source, self._now()),
+            )
+            return cur.fetchone()["id"]
+
+    def get_all_retailers(self) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM retailers ORDER BY name")
+            return [dict(r) for r in cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Dashboard queries
+    # ------------------------------------------------------------------
+
+    def get_dashboard_summary(self, user_id: str) -> dict:
+        """Get aggregate stats for a user's dashboard."""
+        with self._cursor() as cur:
+            cur.execute("SELECT COUNT(*) as count FROM purchases WHERE user_id = %s", (user_id,))
+            total_purchases = cur.fetchone()["count"]
+
+            cur.execute(
+                "SELECT COUNT(*) as count FROM purchases WHERE user_id = %s AND product_url IS NOT NULL",
+                (user_id,),
+            )
+            active_tracking = cur.fetchone()["count"]
+
+            cur.execute(
+                """SELECT COUNT(*) as count, COALESCE(SUM(s.savings_amount), 0) as total
+                   FROM savings s JOIN purchases p ON s.purchase_id = p.id
+                   WHERE p.user_id = %s""",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            total_savings_count = row["count"]
+            total_savings_amount = float(row["total"])
+
+            cur.execute(
+                """SELECT COUNT(*) as count FROM savings s
+                   JOIN purchases p ON s.purchase_id = p.id
+                   WHERE p.user_id = %s AND s.status IN ('new', 'notified')""",
+                (user_id,),
+            )
+            pending_claims = cur.fetchone()["count"]
+
+            return {
+                "total_purchases": total_purchases,
+                "active_tracking": active_tracking,
+                "total_savings_count": total_savings_count,
+                "total_savings_amount": total_savings_amount,
+                "pending_claims": pending_claims,
+            }
+
+    def get_purchases_with_latest_check(self, user_id: str) -> list[dict]:
+        """Get all purchases with their most recent price check status."""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT p.*,
+                          pc.current_price as latest_price,
+                          pc.checked_at as last_checked,
+                          pc.status as check_status
+                   FROM purchases p
+                   LEFT JOIN LATERAL (
+                       SELECT current_price, checked_at, status
+                       FROM price_checks
+                       WHERE purchase_id = p.id
+                       ORDER BY checked_at DESC
+                       LIMIT 1
+                   ) pc ON true
+                   WHERE p.user_id = %s
+                   ORDER BY p.created_at DESC""",
+                (user_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_savings_with_details(self, user_id: str) -> list[dict]:
+        """Get all savings with purchase details for the dashboard."""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT s.*, p.item_name, p.retailer, p.product_url, p.order_number, p.purchase_date
+                   FROM savings s
+                   JOIN purchases p ON s.purchase_id = p.id
+                   WHERE p.user_id = %s
+                   ORDER BY s.detected_at DESC""",
+                (user_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_users_with_active_purchases(self) -> list[dict]:
+        """Get all users who have purchases with URLs (for price check scheduling)."""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT DISTINCT u.* FROM users u
+                   JOIN purchases p ON u.id = p.user_id
+                   WHERE p.product_url IS NOT NULL"""
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_users_with_notified_savings(self) -> list[dict]:
+        """Get all users who have savings ready to be claimed."""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT DISTINCT u.* FROM users u
+                   JOIN purchases p ON u.id = p.user_id
+                   JOIN savings s ON s.purchase_id = p.id
+                   WHERE s.status = 'notified'"""
+            )
+            return [dict(r) for r in cur.fetchall()]

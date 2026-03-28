@@ -67,13 +67,13 @@ class PriceChecker:
         self.scraper = scraper
         self.policy_lookup = policy_lookup
 
-    def discover_product_urls(self) -> int:
+    def discover_product_urls(self, user_id: str) -> int:
         """Find product URLs for purchases that don't have one yet.
 
         Returns:
             Number of URLs successfully found.
         """
-        purchases = self.db.get_purchases_needing_url()
+        purchases = self.db.get_purchases_needing_url(user_id)
         found = 0
 
         for purchase in purchases:
@@ -191,7 +191,7 @@ class PriceChecker:
 
         return None, False
 
-    def check_all_prices(self) -> list[dict]:
+    def check_all_prices(self, user_id: str) -> list[dict]:
         """Check prices for all purchases that have URLs and are still
         within their retailer's refund window.
 
@@ -200,9 +200,9 @@ class PriceChecker:
             price drop was detected.
         """
         # First, try to find URLs for purchases that don't have one
-        self.discover_product_urls()
+        self.discover_product_urls(user_id)
 
-        purchases = self.db.get_purchases_with_url()
+        purchases = self.db.get_purchases_with_url(user_id)
         drops: list[dict] = []
 
         for purchase in purchases:
