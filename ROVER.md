@@ -12,6 +12,7 @@ Rover is a Python background service that automatically monitors your Gmail for 
 4. **URL Discovery** — Searches DuckDuckGo for product page URLs, uses Claude to pick the best match from the retailer's own domain
 5. **Price Checking** (every 6 hr) — For purchases with URLs still within refund window, scrapes the product page (with Playwright fallback for bot-protected sites), extracts JSON-LD product data, and uses Claude to extract the current price
 6. **Savings Detection** — If current price < price paid, records the drop in the database
+7. **Email Notification** — Sends a consolidated HTML email via Gmail API with all price drops, savings amounts, and days remaining in refund window
 
 ### Refund Policy System (Three-Tier)
 - **Tier 1**: Known retailer database (`retailers.yaml`) with 22 major retailers and their refund windows (e.g., Amazon 30d, Target 90d, Apple 14d, REI 365d)
@@ -45,7 +46,8 @@ rover/
 ├── parser.py            # Regex pre-filter + LLM structured extraction (tool_use)
 ├── scraper.py           # HTTP fetcher + Playwright fallback + JSON-LD extraction
 ├── price_checker.py     # DuckDuckGo URL discovery, LLM price extraction, savings detection
-├── scheduler.py         # APScheduler — email scan (30min) + price check (6hr)
+├── scheduler.py         # APScheduler — email scan (30min) + price check (6hr) + notifications
+├── notifier.py          # Email notifications via Gmail API — consolidated HTML alerts
 ├── policies.py          # Retailer policy lookup (DB → YAML → LLM scrape → default)
 ├── dev_server.py        # Flask dev UI for interactive pipeline testing (localhost:5001)
 ├── logger.py            # Console + file logging
@@ -73,12 +75,15 @@ config.yaml              # Runtime config (gitignored)
 Python 3.11+, anthropic, google-api-python-client, APScheduler, requests, BeautifulSoup, lxml, Playwright, Flask (dev only), SQLite
 
 ## Current Status
-- Full pipeline functional end-to-end: email scan → receipt parsing → URL discovery → price scraping → savings detection
+- Full pipeline functional end-to-end: email scan → receipt parsing → URL discovery → price scraping → savings detection → email notification
 - Tested with real Gmail data: 99 emails scanned, 12 receipts parsed, 17 purchases stored, 7 product URLs found, 3 price drops detected ($7.72 + $12.00 + $5.00 savings)
-- Dev server UI at localhost:5001 for interactive testing of each pipeline step
-- Scheduler exists but not yet tested in long-running production mode
+- Email notifications working — consolidated HTML email with price drop table, savings amounts, product links, and days remaining in refund window
+- Dev server UI at localhost:5001 for interactive testing of each pipeline step, including test notification sending
+- 161 tests covering all modules (db, parser, scraper, policies, price_checker, notifier)
+- Landing page deployed at tryrover.app
 
 ## Next Steps
-- **Action on price drops** — notification system and/or automated claim emails to retailers
+- **Automated claim emails** — send price adjustment request emails directly to retailers using support_email from DB
 - **Improve generic item matching** — items like "KNITS", "GRAPHICS" need better product URL discovery
 - **Rate limit resilience** — DuckDuckGo rate limits during burst operations; consider paid search API for production
+- **Email forwarding intake** — allow users to forward receipts to Rover instead of connecting Gmail (for multi-user product)

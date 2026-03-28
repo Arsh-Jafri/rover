@@ -10,7 +10,7 @@ pip install -e .
 playwright install chromium  # for scraping bot-protected sites
 ```
 
-Requires `.env` with `ANTHROPIC_API_KEY` and a `config.yaml` (see `config.example.yaml`). Gmail OAuth needs `credentials.json` from Google Cloud Console.
+Requires `.env` with `ANTHROPIC_API_KEY` and a `config.yaml` (see `config.example.yaml`). Gmail OAuth needs `credentials.json` from Google Cloud Console. Gmail scopes include `gmail.readonly` and `gmail.send` (for notifications).
 
 ## Running
 
@@ -23,7 +23,7 @@ python -m rover.dev_server   # dev UI at http://localhost:5001 for step-by-step 
 
 Single Python package (`rover/`) with no tests yet. SQLite database (WAL mode), no ORM — raw parameterized SQL.
 
-**Pipeline:** Gmail fetch -> regex pre-filter -> LLM receipt parsing (tool_use) -> DuckDuckGo URL discovery -> price scraping (requests + Playwright fallback) -> LLM price extraction -> savings detection
+**Pipeline:** Gmail fetch -> regex pre-filter -> LLM receipt parsing (tool_use) -> DuckDuckGo URL discovery -> price scraping (requests + Playwright fallback) -> LLM price extraction -> savings detection -> email notification
 
 Key modules:
 - `main.py` — entry point, wires everything together
@@ -32,9 +32,10 @@ Key modules:
 - `scraper.py` — HTTP fetcher with Playwright fallback, JSON-LD extraction, content-type validation
 - `price_checker.py` — DuckDuckGo URL discovery, LLM price extraction (plain prompt, no tool_use), savings detection
 - `policies.py` — Retailer refund window lookup (DB -> YAML seed -> LLM extraction from scraped policy pages -> default)
-- `scheduler.py` — APScheduler jobs (email scan 30min, price check 6hr)
+- `notifier.py` — Email notifications via Gmail API (consolidated HTML email per price check run)
+- `scheduler.py` — APScheduler jobs (email scan 30min, price check 6hr, notifications on drops)
 - `db.py` — SQLite with 5 tables: purchases, price_checks, savings, metadata, retailers
-- `dev_server.py` — Flask dev UI for interactive pipeline testing
+- `dev_server.py` — Flask dev UI for interactive pipeline testing (includes notification test buttons)
 - `config.py` — YAML config + .env loading
 
 ## LLM usage
@@ -49,7 +50,7 @@ Key modules:
 - Python 3.11+, type hints on function signatures
 - No ORM, no abstractions beyond what's needed
 - Logging via stdlib `logging` module
-- No tests currently — be careful with changes
+- Tests in `tests/` — run with `pytest tests/ -v`
 
 ## Key files not to commit
 
