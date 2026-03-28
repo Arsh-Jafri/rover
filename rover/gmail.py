@@ -1,5 +1,7 @@
 import base64
 import os
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -58,6 +60,32 @@ class GmailClient:
 
         self.service = build("gmail", "v1", credentials=creds)
         logger.info("Gmail service initialized")
+
+    def send_email(self, to: str, subject: str, html_body: str) -> dict:
+        """Send an email via Gmail API.
+
+        Args:
+            to: Recipient email address.
+            subject: Email subject line.
+            html_body: HTML content for the email body.
+
+        Returns:
+            Gmail API response dict with message id.
+        """
+        if self.service is None:
+            raise RuntimeError("Gmail client not authenticated. Call authenticate() first.")
+
+        message = MIMEMultipart("alternative")
+        message["to"] = to
+        message["subject"] = subject
+        message.attach(MIMEText(html_body, "html"))
+
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+        result = self.service.users().messages().send(
+            userId="me", body={"raw": raw}
+        ).execute()
+        logger.info("Email sent to %s: message id %s", to, result.get("id"))
+        return result
 
     def fetch_emails(self, after_date: str | None = None) -> list[dict]:
         """Fetch emails matching the configured search query.

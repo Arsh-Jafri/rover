@@ -11,6 +11,7 @@ from rover.config import get_config
 from rover.db import Database
 from rover.gmail import GmailClient
 from rover.logger import setup_logging
+from rover.notifier import NotificationManager
 from rover.parser import ReceiptParser
 from rover.policies import PolicyLookup
 from rover.price_checker import PriceChecker
@@ -26,10 +27,11 @@ parser = None
 scraper = None
 policy_lookup = None
 price_checker = None
+notifier = None
 
 
 def init():
-    global config, db, gmail, parser, scraper, policy_lookup, price_checker
+    global config, db, gmail, parser, scraper, policy_lookup, price_checker, notifier
     config = get_config()
     setup_logging(config)
     db = Database(config.get("database", {}).get("path", "rover.db"))
@@ -58,6 +60,12 @@ def init():
         config=config,
         db=db,
         scraper=scraper,
+        policy_lookup=policy_lookup,
+    )
+    notifier = NotificationManager(
+        config=config,
+        db=db,
+        gmail_client=gmail,
         policy_lookup=policy_lookup,
     )
 
@@ -157,6 +165,18 @@ TEMPLATE = """
   <button onclick="discoverPolicies()" id="btn-policies">Find Refund Policies</button>
   <div class="status" id="policies-status"></div>
   <div class="results" id="policies-results"></div>
+</div>
+
+<!-- Notifications -->
+<div class="section">
+  <h2>8. Notifications</h2>
+  <p style="font-size:0.85rem;color:#888;margin-bottom:12px;">Send email notifications for detected price drops.</p>
+  <div style="display:flex;gap:8px;">
+    <button onclick="sendTestNotification()" id="btn-test-notif">Send Test Email</button>
+    <button onclick="sendRealNotification()" id="btn-real-notif">Notify Un-sent Savings</button>
+  </div>
+  <div class="status" id="notif-status"></div>
+  <div class="results" id="notif-results"></div>
 </div>
 
 <!-- Manual Policy Lookup -->
@@ -443,6 +463,45 @@ async function lookupPolicy() {
     container.innerHTML = html || '<div style="color:#666;">No links found.</div>';
   } catch(e) {
     setStatus('policy-status', 'Request failed: ' + e, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function sendTestNotification() {
+  const btn = document.getElementById('btn-test-notif');
+  btn.disabled = true;
+  setStatus('notif-status', '<span class="spinner"></span> Sending test email...');
+  try {
+    const res = await fetch('/api/notifications/test', {method: 'POST'});
+    const data = await res.json();
+    if (data.ok) {
+      setStatus('notif-status', 'Test email sent to ' + esc(data.recipient), 'ok');
+    } else {
+      setStatus('notif-status', 'Failed: ' + esc(data.error), 'err');
+    }
+  } catch(e) {
+    setStatus('notif-status', 'Request failed: ' + e, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function sendRealNotification() {
+  const btn = document.getElementById('btn-real-notif');
+  btn.disabled = true;
+  setStatus('notif-status', '<span class="spinner"></span> Sending notifications...');
+  try {
+    const res = await fetch('/api/notifications/send', {method: 'POST'});
+    const data = await res.json();
+    if (data.ok) {
+      const msg = data.drops_notified > 0
+        ? data.drops_notified + ' drop(s) notified to ' + esc(data.recipient)
+        : data.message || 'No new savings to notify';
+      setStatus('notif-status', msg, data.drops_notified > 0 ? 'ok' : '');
+    } else {
+      setStatus('notif-status', 'Failed: ' + esc(data.error), 'err');
+    }
+  } catch(e) {
+    setStatus('notif-status', 'Request failed: ' + e, 'err');
   }
   btn.disabled = false;
 }
@@ -736,6 +795,53 @@ def check_prices():
             "total_drops": len(drops),
             "all_checks": all_checks,
         })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/notifications/test", methods=["POST"])
+def test_notification():
+    try:
+        if gmail.service is None:
+            gmail.authenticate()
+        if not notifier:
+            return jsonify({"ok": False, "error": "Notifier not initialized"})
+        success = notifier.send_test_notification()
+        return jsonify({"ok": success, "recipient": notifier.recipient,
+                        "error": None if success else "Send failed — check logs"})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/notifications/send", methods=["POST"])
+def send_notification():
+    try:
+        if gmail.service is None:
+            gmail.authenticate()
+        if not notifier:
+            return jsonify({"ok": False, "error": "Notifier not initialized"})
+        new_savings = db.get_new_savings()
+        if not new_savings:
+            return jsonify({"ok": True, "message": "No new savings to notify", "drops_notified": 0})
+        # Build drop-like dicts from savings rows
+        drops = []
+        for s in new_savings:
+            purchase = db.get_purchase(s["purchase_id"])
+            drops.append({
+                "purchase_id": s["purchase_id"],
+                "price_check_id": s["price_check_id"],
+                "item_name": purchase["item_name"] if purchase else "Unknown",
+                "price_paid": s["original_price"],
+                "current_price": s["dropped_price"],
+                "savings_amount": s["savings_amount"],
+                "saving_id": s["id"],
+                "price_dropped": True,
+            })
+        success = notifier.notify_drops(drops)
+        return jsonify({"ok": success, "drops_notified": len(drops), "recipient": notifier.recipient,
+                        "error": None if success else "Send failed — check logs"})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)})

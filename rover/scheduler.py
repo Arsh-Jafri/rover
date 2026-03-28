@@ -9,13 +9,14 @@ logger = get_logger("scheduler")
 
 
 class RoverScheduler:
-    def __init__(self, config, db, gmail_client, receipt_parser, price_checker, policy_lookup):
+    def __init__(self, config, db, gmail_client, receipt_parser, price_checker, policy_lookup, notifier=None):
         self.config = config
         self.db = db
         self.gmail = gmail_client
         self.parser = receipt_parser
         self.price_checker = price_checker
         self.policy_lookup = policy_lookup
+        self.notifier = notifier
         self.scheduler = BlockingScheduler()
 
     def start(self):
@@ -110,6 +111,12 @@ class RoverScheduler:
         logger.info("Starting price check run")
         drops = self.price_checker.check_all_prices()
         logger.info("Price check complete: %d drops detected", len(drops))
+
+        if drops and self.notifier:
+            try:
+                self.notifier.notify_drops(drops)
+            except Exception:
+                logger.exception("Notification failed — drops saved in DB, will retry")
 
     def _enrich_retailer(self, receipt: dict):
         product_url = receipt.get("product_url")
