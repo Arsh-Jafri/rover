@@ -71,7 +71,6 @@ Reference guide for building Rover's web dashboard. All values are extracted fro
 
 - **Headings:** Space Grotesk (geometric, sharp)
 - **Body:** DM Sans (clean, neutral)
-- **System fallback:** TT Hoves Pro (self-hosted variable font, 100-900 weight)
 
 ### Scale
 

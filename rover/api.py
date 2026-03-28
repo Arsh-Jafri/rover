@@ -47,7 +47,10 @@ async def health():
 
 
 @app.post("/api/auth/gmail/connect")
-async def gmail_connect(user_id: str = Depends(get_user_id)):
+async def gmail_connect(
+    request: Request,
+    user_id: str = Depends(get_user_id),
+):
     """Start Gmail OAuth flow — returns the Google authorization URL."""
     from rover.gmail import get_auth_url
 
@@ -56,7 +59,16 @@ async def gmail_connect(user_id: str = Depends(get_user_id)):
         "http://localhost:8000/api/auth/gmail/callback",
     )
 
-    auth_url = get_auth_url(redirect_uri=redirect_uri, state=user_id)
+    # Encode return path in state so callback knows where to redirect
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    return_to = body.get("return_to", "/dashboard/settings")
+    state = f"{user_id}|{return_to}"
+
+    auth_url = get_auth_url(redirect_uri=redirect_uri, state=state)
     return {"auth_url": auth_url}
 
 
@@ -83,8 +95,15 @@ async def gmail_callback(
         "http://localhost:8000/api/auth/gmail/callback",
     )
 
-    user_id = state
+    # Parse state: "user_id|return_path" or just "user_id"
+    if "|" in state:
+        user_id, return_to = state.split("|", 1)
+    else:
+        user_id = state
+        return_to = "/dashboard/settings"
+
     token_store = get_token_store()
+    dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:3000")
 
     try:
         gmail_email = handle_callback(
@@ -95,12 +114,9 @@ async def gmail_callback(
         )
     except Exception:
         logger.exception("Gmail OAuth callback failed for user %s", user_id)
-        dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:3000")
-        return RedirectResponse(f"{dashboard_url}/dashboard/settings?gmail_error=callback_failed")
+        return RedirectResponse(f"{dashboard_url}{return_to}?gmail_error=callback_failed")
 
-    # Redirect back to dashboard settings with success
-    dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:3000")
-    return RedirectResponse(f"{dashboard_url}/dashboard/settings?gmail_connected=true")
+    return RedirectResponse(f"{dashboard_url}{return_to}?gmail_connected=true")
 
 
 @app.get("/api/auth/gmail/status")
@@ -124,6 +140,27 @@ async def gmail_disconnect(user_id: str = Depends(get_user_id)):
     token_store = get_token_store()
     token_store.delete_token(user_id)
     return {"disconnected": True}
+
+
+# ------------------------------------------------------------------
+# Onboarding
+# ------------------------------------------------------------------
+
+
+@app.get("/api/onboarding/status")
+async def onboarding_status(user_id: str = Depends(get_user_id)):
+    """Check if the user has completed onboarding."""
+    db = get_db()
+    completed = db.get_metadata(user_id, "onboarding_completed")
+    return {"completed": completed == "true"}
+
+
+@app.post("/api/onboarding/complete")
+async def onboarding_complete(user_id: str = Depends(get_user_id)):
+    """Mark onboarding as completed."""
+    db = get_db()
+    db.set_metadata(user_id, "onboarding_completed", "true")
+    return {"completed": True}
 
 
 # ------------------------------------------------------------------
@@ -157,9 +194,9 @@ async def list_purchases(user_id: str = Depends(get_user_id)):
 
     # Serialize datetimes to strings
     for p in purchases:
-        for key in ("created_at", "last_checked"):
-            if p.get(key) and hasattr(p[key], "isoformat"):
-                p[key] = p[key].isoformat()
+        for key, val in p.items():
+            if hasattr(val, "isoformat"):
+                p[key] = val.isoformat()
 
     return {"purchases": purchases, "count": len(purchases)}
 
@@ -258,3 +295,98 @@ async def update_me(
         if hasattr(val, "isoformat"):
             updated[key] = val.isoformat()
     return updated
+
+
+# ------------------------------------------------------------------
+# Notifications
+# ------------------------------------------------------------------
+
+
+@app.get("/api/notifications")
+async def list_notifications(user_id: str = Depends(get_user_id)):
+    """List notifications for the current user."""
+    db = get_db()
+    notifications = db.get_notifications(user_id)
+    unread = db.get_unread_notification_count(user_id)
+
+    for n in notifications:
+        for key, val in n.items():
+            if hasattr(val, "isoformat"):
+                n[key] = val.isoformat()
+
+    return {"notifications": notifications, "unread_count": unread}
+
+
+@app.post("/api/notifications/{notification_id}/read")
+async def mark_read(notification_id: int, user_id: str = Depends(get_user_id)):
+    """Mark a single notification as read."""
+    db = get_db()
+    db.mark_notification_read(notification_id, user_id)
+    return {"ok": True}
+
+
+@app.post("/api/notifications/read-all")
+async def mark_all_read(user_id: str = Depends(get_user_id)):
+    """Mark all notifications as read."""
+    db = get_db()
+    db.mark_all_notifications_read(user_id)
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# Activity feed
+# ------------------------------------------------------------------
+
+
+@app.get("/api/activity")
+async def get_activity(user_id: str = Depends(get_user_id)):
+    """Get recent activity for the user — price checks, savings, notifications."""
+    db = get_db()
+    activity = []
+
+    # Recent price checks
+    with db._cursor() as cur:
+        cur.execute(
+            """SELECT pc.*, p.item_name, p.retailer
+               FROM price_checks pc
+               JOIN purchases p ON pc.purchase_id = p.id
+               WHERE p.user_id = %s
+               ORDER BY pc.checked_at DESC LIMIT 30""",
+            (user_id,),
+        )
+        for row in cur.fetchall():
+            r = dict(row)
+            activity.append({
+                "type": "price_check",
+                "title": f"Checked price for {r['item_name']}",
+                "detail": f"${r['current_price']:.2f}" if r.get("current_price") else r.get("error_detail", "Failed"),
+                "status": r["status"],
+                "retailer": r["retailer"],
+                "timestamp": r["checked_at"].isoformat() if hasattr(r["checked_at"], "isoformat") else r["checked_at"],
+            })
+
+    # Recent savings
+    with db._cursor() as cur:
+        cur.execute(
+            """SELECT s.*, p.item_name, p.retailer
+               FROM savings s
+               JOIN purchases p ON s.purchase_id = p.id
+               WHERE p.user_id = %s
+               ORDER BY s.detected_at DESC LIMIT 20""",
+            (user_id,),
+        )
+        for row in cur.fetchall():
+            r = dict(row)
+            activity.append({
+                "type": "saving",
+                "title": f"Price drop on {r['item_name']}",
+                "detail": f"Save ${r['savings_amount']:.2f}",
+                "status": r["status"],
+                "retailer": r["retailer"],
+                "timestamp": r["detected_at"].isoformat() if hasattr(r["detected_at"], "isoformat") else r["detected_at"],
+            })
+
+    # Sort by timestamp descending
+    activity.sort(key=lambda a: a["timestamp"], reverse=True)
+
+    return {"activity": activity[:50]}

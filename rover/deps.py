@@ -3,9 +3,10 @@
 import os
 from functools import lru_cache
 
-from fastapi import Depends, HTTPException, Request
+import jwt
+import requests
+from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 
 from rover.db import Database
 from rover.logger import get_logger
@@ -26,11 +27,14 @@ def get_token_store() -> GmailTokenStore:
     return GmailTokenStore(get_db())
 
 
-def get_supabase_jwt_secret() -> str:
-    secret = os.environ.get("SUPABASE_JWT_SECRET")
-    if not secret:
-        raise ValueError("SUPABASE_JWT_SECRET must be set")
-    return secret
+@lru_cache
+def get_jwks() -> jwt.PyJWKClient:
+    """Fetch Supabase JWKS for ES256 token verification."""
+    supabase_url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+    if not supabase_url:
+        raise ValueError("SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL must be set")
+    jwks_url = f"{supabase_url}/auth/v1/.well-known/jwks.json"
+    return jwt.PyJWKClient(jwks_url)
 
 
 async def get_current_user(
@@ -43,21 +47,35 @@ async def get_current_user(
     """
     token = credentials.credentials
 
+    # Try ES256 (new Supabase signing keys) via JWKS
+    payload = None
     try:
-        secret = get_supabase_jwt_secret()
-    except ValueError:
-        raise HTTPException(status_code=500, detail="Server auth not configured")
-
-    try:
+        jwks_client = get_jwks()
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
         payload = jwt.decode(
             token,
-            secret,
-            algorithms=["HS256"],
+            signing_key.key,
+            algorithms=["ES256"],
             audience="authenticated",
         )
-    except JWTError as e:
-        logger.debug("JWT verification failed: %s", e)
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except Exception as e:
+        logger.debug("ES256 verification failed: %s", e)
+
+    # Fallback to HS256 (legacy JWT secret)
+    if payload is None:
+        secret = os.environ.get("SUPABASE_JWT_SECRET")
+        if not secret:
+            raise HTTPException(status_code=500, detail="Server auth not configured")
+        try:
+            payload = jwt.decode(
+                token,
+                secret,
+                algorithms=["HS256"],
+                audience="authenticated",
+            )
+        except jwt.PyJWTError as e:
+            logger.warning("JWT verification failed: %s", e)
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     supabase_auth_id = payload.get("sub")
     if not supabase_auth_id:

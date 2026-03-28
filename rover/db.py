@@ -442,13 +442,18 @@ class Database:
             }
 
     def get_purchases_with_latest_check(self, user_id: str) -> list[dict]:
-        """Get all purchases with their most recent price check status."""
+        """Get all purchases with their most recent price check status and retailer info."""
         with self._cursor() as cur:
             cur.execute(
                 """SELECT p.*,
                           pc.current_price as latest_price,
                           pc.checked_at as last_checked,
-                          pc.status as check_status
+                          pc.status as check_status,
+                          r.support_email as retailer_support_email,
+                          r.support_url as retailer_support_url,
+                          r.refund_window_days,
+                          s_active.savings_status,
+                          s_active.savings_amount as active_savings_amount
                    FROM purchases p
                    LEFT JOIN LATERAL (
                        SELECT current_price, checked_at, status
@@ -457,6 +462,14 @@ class Database:
                        ORDER BY checked_at DESC
                        LIMIT 1
                    ) pc ON true
+                   LEFT JOIN retailers r ON lower(r.name) = lower(p.retailer)
+                   LEFT JOIN LATERAL (
+                       SELECT s.status as savings_status, s.savings_amount
+                       FROM savings s
+                       WHERE s.purchase_id = p.id
+                       ORDER BY s.detected_at DESC
+                       LIMIT 1
+                   ) s_active ON true
                    WHERE p.user_id = %s
                    ORDER BY p.created_at DESC""",
                 (user_id,),
@@ -496,3 +509,64 @@ class Database:
                    WHERE s.status = 'notified'"""
             )
             return [dict(r) for r in cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Notifications
+    # ------------------------------------------------------------------
+
+    def add_notification(
+        self,
+        user_id: str,
+        title: str,
+        body: str | None = None,
+        link: str | None = None,
+    ) -> int:
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO notifications (user_id, title, body, link)
+                   VALUES (%s, %s, %s, %s) RETURNING id""",
+                (user_id, title, body, link),
+            )
+            return cur.fetchone()["id"]
+
+    def add_notification_for_all(self, title: str, body: str | None = None, link: str | None = None) -> int:
+        """Send a notification to every user. Returns count sent."""
+        with self._cursor() as cur:
+            cur.execute("SELECT id FROM users")
+            users = cur.fetchall()
+            for u in users:
+                cur.execute(
+                    "INSERT INTO notifications (user_id, title, body, link) VALUES (%s, %s, %s, %s)",
+                    (u["id"], title, body, link),
+                )
+            return len(users)
+
+    def get_notifications(self, user_id: str, limit: int = 20) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM notifications WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+                (user_id, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_unread_notification_count(self, user_id: str) -> int:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) as count FROM notifications WHERE user_id = %s AND read = FALSE",
+                (user_id,),
+            )
+            return cur.fetchone()["count"]
+
+    def mark_notification_read(self, notification_id: int, user_id: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE notifications SET read = TRUE WHERE id = %s AND user_id = %s",
+                (notification_id, user_id),
+            )
+
+    def mark_all_notifications_read(self, user_id: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE notifications SET read = TRUE WHERE user_id = %s AND read = FALSE",
+                (user_id,),
+            )
