@@ -111,6 +111,11 @@ class Database:
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def close(self):
+        """Close the database connection."""
+        if self.conn and not self.conn.closed:
+            self.conn.close()
+
     def _cursor(self):
         return self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
