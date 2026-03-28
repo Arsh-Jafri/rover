@@ -93,6 +93,20 @@ CREATE TABLE IF NOT EXISTS retailers (
 );
 
 -- ============================================================
+-- Notifications
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id SERIAL PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    body TEXT,
+    link TEXT,
+    read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ============================================================
 -- Indexes
 -- ============================================================
 
@@ -103,6 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_savings_purchase_id ON savings(purchase_id);
 CREATE INDEX IF NOT EXISTS idx_savings_status ON savings(status);
 CREATE INDEX IF NOT EXISTS idx_metadata_user_id ON metadata(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_gmail_tokens_user_id ON user_gmail_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 
 -- ============================================================
 -- Row-Level Security (Supabase)

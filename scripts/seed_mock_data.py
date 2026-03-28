@@ -185,6 +185,68 @@ def main():
             "currency": "USD",
             "gmail_message_id": "mock_stanley_001",
         },
+        # --- More items with price drops (To Review) ---
+        {
+            "item_name": "Sony WF-1000XM5 Earbuds",
+            "price_paid": 299.99,
+            "retailer": "Amazon",
+            "purchase_date": "2026-03-16",
+            "order_number": "112-5529103-8834521",
+            "product_url": "https://www.amazon.com/dp/B0C8X3G5QT",
+            "currency": "USD",
+            "gmail_message_id": "mock_amazon_003",
+        },
+        {
+            "item_name": "Arc'teryx Atom Hoody",
+            "price_paid": 280.00,
+            "retailer": "Arc'teryx",
+            "purchase_date": "2026-03-11",
+            "order_number": "ARC-2203948",
+            "product_url": "https://arcteryx.com/us/en/shop/mens/atom-hoody",
+            "currency": "USD",
+            "gmail_message_id": "mock_arcteryx_001",
+        },
+        {
+            "item_name": "Dyson Airwrap Multi-Styler",
+            "price_paid": 599.99,
+            "retailer": "Dyson",
+            "purchase_date": "2026-03-19",
+            "order_number": "DYS-88102934",
+            "product_url": "https://www.dyson.com/hair-care/hair-stylers/airwrap",
+            "currency": "USD",
+            "gmail_message_id": "mock_dyson_001",
+        },
+        # --- Expired purchases (old dates, window closed) ---
+        {
+            "item_name": "Nike Dunk Low Retro",
+            "price_paid": 115.00,
+            "retailer": "Nike",
+            "purchase_date": "2026-01-20",
+            "order_number": "C10104982",
+            "product_url": "https://www.nike.com/t/dunk-low-retro-mens-shoes",
+            "currency": "USD",
+            "gmail_message_id": "mock_nike_002",
+        },
+        {
+            "item_name": "Bose QuietComfort Ultra",
+            "price_paid": 429.00,
+            "retailer": "Amazon",
+            "purchase_date": "2026-01-05",
+            "order_number": "112-0092847-3301928",
+            "product_url": "https://www.amazon.com/dp/B0CCZ1L489",
+            "currency": "USD",
+            "gmail_message_id": "mock_amazon_004",
+        },
+        {
+            "item_name": "Everlane ReNew Puffer",
+            "price_paid": 168.00,
+            "retailer": "Everlane",
+            "purchase_date": "2026-02-01",
+            "order_number": "EVR-3392011",
+            "product_url": "https://www.everlane.com/products/mens-renew-puffer",
+            "currency": "USD",
+            "gmail_message_id": "mock_everlane_001",
+        },
     ]
 
     purchase_ids = []
@@ -220,6 +282,14 @@ def main():
         (9, 189.99, "success", "2026-03-27 14:45:00+00", None),        # Kindle — same
         (10, 98.00, "success", "2026-03-27 14:50:00+00", None),        # Allbirds — same
         (11, 35.00, "success", "2026-03-27 14:55:00+00", None),        # Stanley — dropped!
+        # New items
+        (12, 269.99, "success", "2026-03-27 15:00:00+00", None),       # Sony earbuds — dropped!
+        (13, 238.00, "success", "2026-03-27 15:05:00+00", None),       # Arc'teryx — dropped!
+        (14, 499.99, "success", "2026-03-27 15:10:00+00", None),       # Dyson — dropped!
+        # Expired items
+        (15, 99.99, "success", "2026-03-27 15:15:00+00", None),        # Nike Dunk — dropped but expired
+        (16, 379.00, "success", "2026-03-27 15:20:00+00", None),       # Bose — dropped but expired
+        (17, 168.00, "success", "2026-03-27 15:25:00+00", None),       # Everlane — same, expired
         # Older checks
         (0, 129.99, "success", "2026-03-21 10:00:00+00", None),
         (1, 319.99, "success", "2026-03-21 10:05:00+00", None),        # Sony was cheaper earlier
@@ -249,6 +319,9 @@ def main():
         (4, 4, 128.00, 118.00, 10.00, "new",      "2026-03-27 14:21:00+00"),    # Lulu
         (6, 6, 320.00, 279.99, 40.01, "notified", "2026-03-27 14:31:00+00"),    # TNF
         (11, 11, 45.00, 35.00, 10.00, "new",      "2026-03-27 14:56:00+00"),    # Stanley
+        (12, 12, 299.99, 269.99, 30.00, "new",     "2026-03-27 15:01:00+00"),   # Sony earbuds
+        (13, 13, 280.00, 238.00, 42.00, "notified", "2026-03-27 15:06:00+00"),  # Arc'teryx
+        (14, 14, 599.99, 499.99, 100.00, "new",    "2026-03-27 15:11:00+00"),   # Dyson
     ]
 
     for pi, pci, orig, dropped, amount, status, detected in savings_data:
@@ -270,6 +343,9 @@ def main():
         ("Patagonia claim successful", "You saved $30.00 on your Better Sweater Jacket. Patagonia confirmed the price adjustment.", None, True, "2026-03-27 16:00:00+00"),
         ("Price drop on Lululemon ABC Jogger", "Down $10.00 to $118.00. Rover's keeping an eye on it.", None, False, "2026-03-27 14:22:00+00"),
         ("Price drop on Stanley Quencher", "Your tumbler dropped to $35.00 — that's $10 back in your pocket.", None, False, "2026-03-27 14:57:00+00"),
+        ("Price drop on Sony WF-1000XM5", "Rover spotted a $30.00 drop on your earbuds — now $269.99.", None, False, "2026-03-27 15:02:00+00"),
+        ("Price drop on Arc'teryx Atom Hoody", "Down $42.00 to $238.00. That's a solid drop.", None, False, "2026-03-27 15:07:00+00"),
+        ("Price drop on Dyson Airwrap", "Rover found a $100.00 price drop on your Airwrap. Big one.", None, False, "2026-03-27 15:12:00+00"),
         ("Welcome to Rover", "Rover's connected and watching your inbox. He'll catch every price drop.", None, True, "2026-03-15 09:00:00+00"),
         ("Gmail connected", "Rover scanned your inbox and found 12 recent purchases to track.", None, True, "2026-03-15 09:01:00+00"),
         ("First scan complete", "Rover found product URLs for 10 out of 12 items. Price tracking begins now.", None, True, "2026-03-15 09:30:00+00"),
@@ -299,6 +375,9 @@ def main():
         ("Uniqlo", "uniqlo.com", 30, None, "https://www.uniqlo.com/us/en/help/contact-us.html", "https://www.uniqlo.com/us/en/help/returns-and-exchanges.html"),
         ("Allbirds", "allbirds.com", 30, "help@allbirds.com", "https://www.allbirds.com/pages/contact", "https://www.allbirds.com/pages/return-policy"),
         ("Stanley", "stanley1913.com", 30, None, "https://www.stanley1913.com/pages/contact-us", "https://www.stanley1913.com/policies/refund-policy"),
+        ("Arc'teryx", "arcteryx.com", 30, None, "https://arcteryx.com/us/en/help", "https://arcteryx.com/us/en/help/returns-and-exchanges"),
+        ("Dyson", "dyson.com", 30, "support@dyson.com", "https://www.dyson.com/support", "https://www.dyson.com/support/returns"),
+        ("Everlane", "everlane.com", 30, "support@everlane.com", "https://www.everlane.com/help", "https://www.everlane.com/returns"),
     ]
 
     for name, domain, window, email, support, policy in retailers:

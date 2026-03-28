@@ -186,6 +186,35 @@ async def dashboard_summary(user_id: str = Depends(get_user_id)):
 # ------------------------------------------------------------------
 
 
+@app.post("/api/purchases")
+async def create_purchase(body: dict, user_id: str = Depends(get_user_id)):
+    """Manually add a purchase to track."""
+    product_url = body.get("product_url")
+    if not product_url:
+        raise HTTPException(status_code=400, detail="product_url is required")
+
+    from datetime import date
+    import uuid
+
+    db = get_db()
+    purchase_id = db.add_purchase(
+        user_id=user_id,
+        gmail_message_id=f"manual_{uuid.uuid4().hex[:12]}",
+        item_name=body.get("item_name") or "Untitled product",
+        price_paid=float(body["price_paid"]) if body.get("price_paid") else 0,
+        product_url=product_url,
+        retailer=body.get("retailer") or "",
+        purchase_date=body.get("purchase_date") or date.today().isoformat(),
+        currency=body.get("currency", "USD"),
+        order_number=body.get("order_number"),
+    )
+
+    if not purchase_id:
+        raise HTTPException(status_code=400, detail="Failed to create purchase")
+
+    return {"id": purchase_id, "created": True}
+
+
 @app.get("/api/purchases")
 async def list_purchases(user_id: str = Depends(get_user_id)):
     """List all purchases with their latest price check status."""

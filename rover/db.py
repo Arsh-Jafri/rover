@@ -81,6 +81,16 @@ CREATE TABLE IF NOT EXISTS retailers (
     source TEXT DEFAULT 'manual' CHECK(source IN ('manual', 'scraped')),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id SERIAL PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    body TEXT,
+    link TEXT,
+    read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
 """
 
 
