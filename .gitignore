@@ -31,10 +31,15 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
+# macOS
+.DS_Store
+
 # Rover secrets and runtime files
 config.yaml
 .env
 *.db
+*.db-shm
+*.db-wal
 token.json
 credentials.json
 rover.log
