@@ -1,6 +1,7 @@
 """Rover API — FastAPI backend for the SaaS dashboard."""
 
 import os
+import re
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -39,6 +40,37 @@ app.add_middleware(
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "rover-api"}
+
+
+# ------------------------------------------------------------------
+# Email validation (public — no auth required)
+# ------------------------------------------------------------------
+
+EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
+
+@app.post("/api/auth/check-email")
+async def check_email(body: dict):
+    """Validate email format and check if it's already registered.
+
+    Public endpoint — called during the signup flow before Supabase auth.
+    """
+    email = (body.get("email") or "").strip().lower()
+
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    if not EMAIL_RE.match(email):
+        return {"valid": False, "available": False, "reason": "Invalid email format"}
+
+    db = get_db()
+    existing = db.get_user_by_email(email)
+
+    return {
+        "valid": True,
+        "available": existing is None,
+        "reason": "Email already associated with an account" if existing else None,
+    }
 
 
 # ------------------------------------------------------------------

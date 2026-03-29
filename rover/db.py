@@ -140,6 +140,12 @@ class Database:
             row = cur.fetchone()
             return dict(row) if row else None
 
+    def get_user_by_email(self, email: str) -> dict | None:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE email = %s", (email,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
     def get_user(self, user_id: str) -> dict | None:
         with self._cursor() as cur:
             cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
