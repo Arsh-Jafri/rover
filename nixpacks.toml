@@ -2,7 +2,7 @@
 nixPkgs = ["python311"]
 
 [phases.install]
-cmds = ["pip install -e ."]
+cmds = ["pip install -e .", "pip install psycopg2-binary"]
 
 [start]
 cmd = "uvicorn rover.api:app --host 0.0.0.0 --port ${PORT:-8000}"
