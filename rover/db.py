@@ -146,6 +146,12 @@ class Database:
             row = cur.fetchone()
             return dict(row) if row else None
 
+    def delete_user(self, user_id: str) -> bool:
+        """Delete a user and all their data (cascades via foreign keys)."""
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            return cur.rowcount > 0
+
     # ------------------------------------------------------------------
     # Gmail Tokens
     # ------------------------------------------------------------------

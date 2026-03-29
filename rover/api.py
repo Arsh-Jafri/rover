@@ -305,6 +305,23 @@ async def get_me(user: dict = Depends(get_current_user)):
     return user
 
 
+@app.delete("/api/me")
+async def delete_me(user: dict = Depends(get_current_user)):
+    """Delete the current user's account and all associated data."""
+    db = get_db()
+    user_id = str(user["id"])
+
+    # Remove Gmail tokens first
+    token_store = get_token_store()
+    try:
+        token_store.delete_token(user_id)
+    except Exception:
+        pass
+
+    db.delete_user(user_id)
+    return {"deleted": True}
+
+
 @app.patch("/api/me")
 async def update_me(
     updates: dict,

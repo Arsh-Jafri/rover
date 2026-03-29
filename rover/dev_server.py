@@ -36,14 +36,7 @@ def init():
     global config, db, gmail, parser, scraper, policy_lookup, price_checker, notifier, claimer
     config = get_config()
     setup_logging(config)
-    db = Database(config.get("database", {}).get("path", "rover.db"))
-    # Allow SQLite connection to be used across Flask's request threads
-    db.conn.close()
-    import sqlite3
-    db.conn = sqlite3.connect(db.db_path, check_same_thread=False)
-    db.conn.row_factory = sqlite3.Row
-    db.conn.execute("PRAGMA journal_mode=WAL")
-    db.conn.execute("PRAGMA foreign_keys=ON")
+    db = Database(config.get("database", {}).get("url"))
     gmail = GmailClient(config)
     parser = ReceiptParser(config)
     scraper = Scraper(config)
