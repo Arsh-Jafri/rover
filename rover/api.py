@@ -6,7 +6,7 @@ import re
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from rover.deps import get_current_user, get_db, get_token_store, get_user_id
 from rover.logger import get_logger, setup_logging
@@ -16,6 +16,19 @@ load_dotenv()
 logger = get_logger("api")
 
 app = FastAPI(title="Rover API", version="0.1.0")
+
+
+# Catch-all exception handler — ensures CORS headers are present on 500s.
+# Without this, unhandled exceptions are caught by Starlette's ServerErrorMiddleware
+# *outside* the CORS middleware, so the browser sees "no CORS header" instead of the real error.
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+    )
+
 
 # CORS — allow dashboard origins
 app.add_middleware(
