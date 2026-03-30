@@ -125,14 +125,27 @@ class Database:
 
     def create_user(self, email: str, supabase_auth_id: str, name: str | None = None) -> dict:
         with self._cursor() as cur:
-            cur.execute(
-                """INSERT INTO users (email, supabase_auth_id, name)
-                   VALUES (%s, %s, %s)
-                   ON CONFLICT (supabase_auth_id) DO UPDATE SET email = EXCLUDED.email
-                   RETURNING *""",
-                (email, supabase_auth_id, name),
-            )
-            return dict(cur.fetchone())
+            # Try upsert on supabase_auth_id first (normal re-login)
+            try:
+                cur.execute(
+                    """INSERT INTO users (email, supabase_auth_id, name)
+                       VALUES (%s, %s, %s)
+                       ON CONFLICT (supabase_auth_id) DO UPDATE SET email = EXCLUDED.email
+                       RETURNING *""",
+                    (email, supabase_auth_id, name),
+                )
+                return dict(cur.fetchone())
+            except Exception:
+                self.conn.rollback()
+                # Email exists with a different auth ID (e.g. re-created Supabase account).
+                # Update the existing row to the new auth ID.
+                cur.execute(
+                    """UPDATE users SET supabase_auth_id = %s, name = COALESCE(%s, name)
+                       WHERE email = %s
+                       RETURNING *""",
+                    (supabase_auth_id, name, email),
+                )
+                return dict(cur.fetchone())
 
     def get_user_by_auth_id(self, supabase_auth_id: str) -> dict | None:
         with self._cursor() as cur:
