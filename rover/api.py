@@ -15,34 +15,80 @@ load_dotenv()
 
 logger = get_logger("api")
 
+ALLOWED_ORIGINS = [
+    "https://tryrover.app",
+    "https://www.tryrover.app",
+    "https://rover-web.vercel.app",
+    "http://localhost:3000",
+]
+
+
+class CORSSafetyMiddleware:
+    """Outermost ASGI middleware — guarantees CORS headers on every response,
+    even if an unhandled exception bypasses Starlette's CORSMiddleware."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        try:
+            await self.app(scope, receive, send)
+        except Exception as exc:
+            try:
+                logger.error("Unhandled error escaped middleware stack: %s", exc, exc_info=True)
+            except Exception:
+                pass
+
+            origin = None
+            for header_name, header_value in scope.get("headers", []):
+                if header_name == b"origin":
+                    origin = header_value.decode("latin-1")
+                    break
+
+            headers = {}
+            if origin and origin in ALLOWED_ORIGINS:
+                headers["access-control-allow-origin"] = origin
+                headers["access-control-allow-credentials"] = "true"
+                headers["vary"] = "Origin"
+
+            response = JSONResponse(
+                status_code=500,
+                content={"detail": "Internal server error"},
+                headers=headers,
+            )
+            await response(scope, receive, send)
+
+
 app = FastAPI(title="Rover API", version="0.1.0")
 
 
-# Catch-all exception handler — ensures CORS headers are present on 500s.
-# Without this, unhandled exceptions are caught by Starlette's ServerErrorMiddleware
-# *outside* the CORS middleware, so the browser sees "no CORS header" instead of the real error.
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc)
+    try:
+        logger.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc)
+    except Exception:
+        pass
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)},
+        content={"detail": "Internal server error"},
     )
 
 
 # CORS — allow dashboard origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://tryrover.app",
-        "https://www.tryrover.app",
-        "https://rover-web.vercel.app",
-        "http://localhost:3000",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Safety net — outermost layer, catches anything that escapes the stack
+app.add_middleware(CORSSafetyMiddleware)
 
 
 # ------------------------------------------------------------------
