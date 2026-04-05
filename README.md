@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="RoverBlackLogo.png" alt="Rover" width="300">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="RoverWhiteLogo.png">
+    <source media="(prefers-color-scheme: light)" srcset="RoverBlackLogo.png">
+    <img src="RoverBlackLogo.png" alt="Rover" width="300">
+  </picture>
 </p>
 
 <p align="center">
