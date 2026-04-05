@@ -1,8 +1,14 @@
-# Rover
+<p align="center">
+  <img src="RoverBlackLogo.png" alt="Rover" width="300">
+</p>
 
-Rover watches your inbox, tracks prices on things you've bought, and alerts you when prices drop within the retailer's refund window so you can claim a price adjustment. Built with Python, Claude API, Gmail API, and a Next.js dashboard.
+<p align="center">
+  Rover watches your inbox, tracks prices on things you've bought, and alerts you when prices drop within the retailer's refund window so you can claim a price adjustment. Built with Python, Claude API, Gmail API, and a Next.js dashboard.
+</p>
 
-**Live at [tryrover.app](https://tryrover.app)**
+<p align="center">
+  <strong>Live at <a href="https://tryrover.app">tryrover.app</a></strong>
+</p>
 
 ## How It Works
 
