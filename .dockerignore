@@ -1,0 +1,37 @@
+# Dev-only
+rover/dev_server.py
+scripts/
+tests/
+
+# Docs / images
+README.md
+CLAUDE.md
+DESIGN_SYSTEM.md
+RoverBlackLogo.png
+RoverWhiteLogo.png
+
+# Config examples
+config.example.yaml
+.env.example
+
+# Git / IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# Runtime / secrets
+*.db
+*.db-shm
+*.db-wal
+rover.log
+token.json
+credentials.json
