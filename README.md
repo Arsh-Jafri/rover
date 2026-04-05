@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="RoverWhiteLogo.png">
     <source media="(prefers-color-scheme: light)" srcset="RoverBlackLogo.png">
-    <img src="RoverBlackLogo.png" alt="Rover" width="300">
+    <img src="RoverBlackLogo.png" alt="Rover" width="200">
   </picture>
 </p>
 
