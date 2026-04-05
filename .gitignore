@@ -34,6 +34,10 @@ htmlcov/
 # macOS
 .DS_Store
 
+# Dev-only files
+CLAUDE.md
+DESIGN_SYSTEM.md
+
 # Rover secrets and runtime files
 config.yaml
 .env
