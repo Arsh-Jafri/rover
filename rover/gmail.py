@@ -5,6 +5,11 @@ import secrets
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+# Google returns extra scopes (openid, userinfo.*) when the user has previously
+# granted them (e.g. via Supabase login). oauthlib treats scope changes as errors
+# by default — this env var tells it to accept the broader scope set.
+os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
