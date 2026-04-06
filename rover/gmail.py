@@ -56,7 +56,7 @@ def get_auth_url(redirect_uri: str, state: str | None = None) -> str:
 
 
 def handle_callback(
-    authorization_response: str,
+    code: str,
     redirect_uri: str,
     user_id: str,
     token_store: GmailTokenStore,
@@ -64,7 +64,7 @@ def handle_callback(
     """Exchange the OAuth callback for credentials and store them.
 
     Args:
-        authorization_response: The full callback URL with code parameter.
+        code: The authorization code from Google's callback.
         redirect_uri: Must match the redirect_uri used in get_auth_url.
         user_id: The user to store the token for.
         token_store: Encrypted token storage.
@@ -73,7 +73,7 @@ def handle_callback(
         The Gmail email address if available, or None.
     """
     flow = Flow.from_client_config(get_oauth_config(), scopes=SCOPES, redirect_uri=redirect_uri)
-    flow.fetch_token(authorization_response=authorization_response)
+    flow.fetch_token(code=code)
     creds = flow.credentials
 
     token_store.store_token(user_id, creds)

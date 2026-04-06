@@ -198,7 +198,7 @@ async def gmail_callback(
 
     try:
         gmail_email = handle_callback(
-            authorization_response=f"{redirect_uri}?code={code}",
+            code=code,
             redirect_uri=redirect_uri,
             user_id=user_id,
             token_store=token_store,
