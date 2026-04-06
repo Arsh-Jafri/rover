@@ -403,6 +403,8 @@ async def get_me(user: dict = Depends(get_current_user)):
 @app.delete("/api/me")
 async def delete_me(user: dict = Depends(get_current_user)):
     """Delete the current user's account and all associated data."""
+    import requests as http_requests
+
     db = get_db()
     user_id = str(user["id"])
 
@@ -413,7 +415,27 @@ async def delete_me(user: dict = Depends(get_current_user)):
     except Exception:
         pass
 
+    # Delete from app database
     db.delete_user(user_id)
+
+    # Delete from Supabase Auth
+    supabase_url = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+    service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    supabase_auth_id = user.get("supabase_auth_id")
+
+    if supabase_url and service_role_key and supabase_auth_id:
+        try:
+            http_requests.delete(
+                f"{supabase_url}/auth/v1/admin/users/{supabase_auth_id}",
+                headers={
+                    "apikey": service_role_key,
+                    "Authorization": f"Bearer {service_role_key}",
+                },
+                timeout=10,
+            )
+        except Exception as e:
+            logger.warning("Failed to delete Supabase auth user %s: %s", supabase_auth_id, e)
+
     return {"deleted": True}
 
 
@@ -423,6 +445,8 @@ async def update_me(
     user: dict = Depends(get_current_user),
 ):
     """Update the current user's name."""
+    import requests as http_requests
+
     db = get_db()
     user_id = str(user["id"])
 
@@ -430,6 +454,26 @@ async def update_me(
     if name is not None:
         with db._cursor() as cur:
             cur.execute("UPDATE users SET name = %s WHERE id = %s", (name, user_id))
+
+        # Sync name to Supabase auth user_metadata so the dashboard shell picks it up
+        supabase_url = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+        service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        supabase_auth_id = user.get("supabase_auth_id")
+
+        if supabase_url and service_role_key and supabase_auth_id:
+            try:
+                http_requests.put(
+                    f"{supabase_url}/auth/v1/admin/users/{supabase_auth_id}",
+                    headers={
+                        "apikey": service_role_key,
+                        "Authorization": f"Bearer {service_role_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"user_metadata": {"full_name": name}},
+                    timeout=10,
+                )
+            except Exception as e:
+                logger.warning("Failed to sync name to Supabase for user %s: %s", user_id, e)
 
     updated = db.get_user(user_id)
     for key, val in updated.items():
