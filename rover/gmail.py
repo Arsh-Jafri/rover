@@ -1,5 +1,7 @@
 import base64
+import hashlib
 import os
+import secrets
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -35,28 +37,47 @@ def get_oauth_config() -> dict:
     }
 
 
-def get_auth_url(redirect_uri: str, state: str | None = None) -> str:
+def _generate_pkce() -> tuple[str, str]:
+    """Generate PKCE code_verifier and code_challenge (S256)."""
+    code_verifier = secrets.token_urlsafe(96)
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return code_verifier, code_challenge
+
+
+def get_auth_url(
+    redirect_uri: str,
+    state: str | None = None,
+    code_challenge: str | None = None,
+) -> str:
     """Generate the Google OAuth authorization URL.
 
     Args:
-        redirect_uri: Where Google redirects after consent (e.g. https://api.tryrover.app/auth/gmail/callback).
-        state: Optional opaque state string to pass through the OAuth flow (e.g. user_id).
+        redirect_uri: Where Google redirects after consent.
+        state: Optional opaque state string to pass through the OAuth flow.
+        code_challenge: PKCE S256 code challenge (required for Google OAuth).
 
     Returns:
         The authorization URL to redirect the user to.
     """
     flow = Flow.from_client_config(get_oauth_config(), scopes=SCOPES, redirect_uri=redirect_uri)
+    extra = {}
+    if code_challenge:
+        extra["code_challenge"] = code_challenge
+        extra["code_challenge_method"] = "S256"
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
         state=state,
+        **extra,
     )
     return auth_url
 
 
 def handle_callback(
     code: str,
+    code_verifier: str,
     redirect_uri: str,
     user_id: str,
     token_store: GmailTokenStore,
@@ -65,6 +86,7 @@ def handle_callback(
 
     Args:
         code: The authorization code from Google's callback.
+        code_verifier: The PKCE code verifier from the initial auth request.
         redirect_uri: Must match the redirect_uri used in get_auth_url.
         user_id: The user to store the token for.
         token_store: Encrypted token storage.
@@ -73,23 +95,15 @@ def handle_callback(
         The Gmail email address if available, or None.
     """
     flow = Flow.from_client_config(get_oauth_config(), scopes=SCOPES, redirect_uri=redirect_uri)
-    flow.fetch_token(code=code)
+    flow.fetch_token(code=code, code_verifier=code_verifier)
     creds = flow.credentials
 
     token_store.store_token(user_id, creds)
 
-    # Try to get the user's Gmail email
+    # Try to get the user's Gmail email and update the record
     gmail_email = _get_gmail_email(creds)
     if gmail_email:
-        from rover.db import Database
-        db = token_store.db
-        db.store_gmail_token(
-            user_id=user_id,
-            encrypted_access_token=db.get_gmail_token(user_id)["encrypted_access_token"],
-            encrypted_refresh_token=db.get_gmail_token(user_id)["encrypted_refresh_token"],
-            token_expiry=creds.expiry.isoformat() if creds.expiry else None,
-            gmail_email=gmail_email,
-        )
+        token_store.db.update_gmail_email(user_id, gmail_email)
 
     logger.info("Gmail connected for user %s (email: %s)", user_id, gmail_email)
     return gmail_email

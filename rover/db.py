@@ -203,6 +203,13 @@ class Database:
             row = cur.fetchone()
             return dict(row) if row else None
 
+    def update_gmail_email(self, user_id: str, gmail_email: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE user_gmail_tokens SET gmail_email = %s WHERE user_id = %s",
+                (gmail_email, user_id),
+            )
+
     def delete_gmail_token(self, user_id: str) -> None:
         with self._cursor() as cur:
             cur.execute("DELETE FROM user_gmail_tokens WHERE user_id = %s", (user_id,))

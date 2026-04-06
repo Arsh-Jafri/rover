@@ -143,23 +143,27 @@ async def gmail_connect(
     user_id: str = Depends(get_user_id),
 ):
     """Start Gmail OAuth flow — returns the Google authorization URL."""
-    from rover.gmail import get_auth_url
+    from rover.gmail import get_auth_url, _generate_pkce
 
     redirect_uri = os.environ.get(
         "GMAIL_OAUTH_REDIRECT_URI",
         "http://localhost:8000/api/auth/gmail/callback",
     )
 
-    # Encode return path in state so callback knows where to redirect
     body = {}
     try:
         body = await request.json()
     except Exception:
         pass
     return_to = body.get("return_to", "/dashboard/settings")
-    state = f"{user_id}|{return_to}"
 
-    auth_url = get_auth_url(redirect_uri=redirect_uri, state=state)
+    # Generate PKCE pair and encode the verifier in state for the callback
+    code_verifier, code_challenge = _generate_pkce()
+    state = f"{user_id}|{return_to}|{code_verifier}"
+
+    auth_url = get_auth_url(
+        redirect_uri=redirect_uri, state=state, code_challenge=code_challenge
+    )
     return {"auth_url": auth_url}
 
 
@@ -186,12 +190,11 @@ async def gmail_callback(
         "http://localhost:8000/api/auth/gmail/callback",
     )
 
-    # Parse state: "user_id|return_path" or just "user_id"
-    if "|" in state:
-        user_id, return_to = state.split("|", 1)
-    else:
-        user_id = state
-        return_to = "/dashboard/settings"
+    # Parse state: "user_id|return_path|code_verifier"
+    parts = state.split("|")
+    user_id = parts[0]
+    return_to = parts[1] if len(parts) > 1 else "/dashboard/settings"
+    code_verifier = parts[2] if len(parts) > 2 else ""
 
     token_store = get_token_store()
     dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:3000")
@@ -199,6 +202,7 @@ async def gmail_callback(
     try:
         gmail_email = handle_callback(
             code=code,
+            code_verifier=code_verifier,
             redirect_uri=redirect_uri,
             user_id=user_id,
             token_store=token_store,
